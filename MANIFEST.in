@@ -1,0 +1,3 @@
+include README.md
+include nap/logs/readme.txt
+include nap/out/readme.txt
