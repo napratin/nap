@@ -2,15 +2,19 @@
 
 import logging
 from time import time
-from math import exp
-import numpy as np
+from math import exp, pi
 from collections import namedtuple, deque
+import numpy as np
+import cv2
 
 from matplotlib.pyplot import figure, plot, axis, show, subplots_adjust
 from mpl_toolkits.mplot3d import Axes3D
 
+# Different neuron distributions
 Normal = namedtuple('Normal', ['mu', 'sigma'])  # a normal distribution, defined by mean (mu) and std. dev. (sigma)
 MultivariateNormal = namedtuple('MultivariateNormal', ['mu', 'cov'])  # a multivariate normal distribution, defined by mean vector (mu) of length N and covariance matrix (cov) of size NxN
+SymmetricNormal = namedtuple('SymmetricNormal', Normal._fields + ('center',))
+SymmetricLogNormal = namedtuple('SymmetricLogNormal', SymmetricNormal._fields)
 
 # Neuron membrane potential levels
 resting_potential = Normal(-0.07, 0.001)  # volts (mean, s.d.); resting / equillibrium potential
@@ -97,7 +101,9 @@ class Synapse:
 
 class Neuron:
   """A simple excitable neuron cell with synaptic connections, potential accumulation and decay functionality."""
-  id_ctr = 0
+  
+  id_ctr = 0  # auto-incremented counter to assign unique IDs to instances
+  _str_attrs = ['id', 'location', 'potential']  # which attributes to include in string representation; subclasses can override this
   
   def __init__(self, location, timeNow):
     self.id = Neuron.id_ctr
@@ -138,39 +144,43 @@ class Neuron:
     self.timeLastUpdated = self.timeCurrent
   
   def updatePotential(self):
+    # Fire action potential, if we've reached peak
     if self.potential >= action_potential_peak:
       self.fireActionPotential()
       self.timeLastFired = self.timeCurrent
       self.potential = np.random.normal(action_potential_trough.mu, action_potential_trough.sigma)  # repolarization/falling phase (instantaneous)
     
+    # Decay potential
     #self.potential = resting_potential.mu + (self.potential - resting_potential.mu) * exp(-potential_decay * self.deltaTime)  # exponential decay
     self.potential -= potential_decay * (self.potential - resting_potential.mu) * self.deltaTime  # approximated exponential decay
+    
+    # Accumulate/integrate incoming potentials
     self.potential += self.potentialAccumulated  # integrate signals accumulated from neighbors
     self.potentialAccumulated = 0.0  # reset accumulator (don't want to double count!)
     
-    '''
-    # Action potential - method 1: Instantaneous rise and fall
-    print self.id, self.timeCurrent, self.potential  # [log: potential]
+    # Check for action potential event
     if self.potential > threshold_potential and (self.timeCurrent - self.timeLastFired) >= refractory_period:
-      #self.potential = action_potential_peak  # depolarization/rising phase (instantaneous)
-      self.fireActionPotential()  # transmission
-      self.timeLastFired = self.timeCurrent
-      self.potential = np.random.normal(action_potential_trough.mu, action_potential_trough.sigma)  # repolarization/falling phase (instantaneous)
-    '''
-    
-    # Action potential - method 2: Gradual rise (more accurate, harder to do in real time)
-    if self.potential > threshold_potential and (self.timeCurrent - self.timeLastFired) >= refractory_period:
-      #print "[SELF-DEPOLARIZATION]"
-      #self.potential += self_depolarization_rate * self.deltaTime  # contant depolarization
-      self.potential += (action_potential_peak + 0.02 - self.potential) * 10 * self_depolarization_rate * self.deltaTime  # smoothed depolarization, hackish
+      self.actionPotential()
     
     #print self.id, self.timeCurrent, self.potential  # [log: potential]
-    
-    # TODO implement neuron-level inhibition (?)
+    # TODO This is the ideal point to gather potential observation; "Fire action potential" step should come immediately after this (instead of at the beginning of updatePotential) in order to prevent any posible delays
+    # TODO Implement neuron-level inhibition (?)
+  
+  def actionPotential_approximate(self):
+    # Action potential - approximate method: Instantaneous rise
+    self.potential = action_potential_peak  # depolarization/rising phase (instantaneous)
+  
+  def actionPotential_accurate(self):
+    # Action potential - accurate method: Gradual rise (harder to do in real time)
+    #print "[SELF-DEPOLARIZATION]"
+    #self.potential += self_depolarization_rate * self.deltaTime  # contant depolarization
+    self.potential += (action_potential_peak + 0.02 - self.potential) * 10 * self_depolarization_rate * self.deltaTime  # smoothed depolarization, hackish
+  
+  actionPotential = actionPotential_approximate  # pick _accurate for more realistic action potential dynamics
   
   def fireActionPotential(self):
-    # Transmit action potential to neighbor neurons through axon
-    #print "Neuron.fireActionPotential() [{}]".format(self.id)
+    # Transmit action potential to neighbor neurons through axon (TODO introduce transmission delay?)
+    #print "Neuron.fireActionPotential() [{}]".format(self.id)  # [debug]
     for synapse in self.synapses:
       synapse.transmitActionPotential(self.timeCurrent)
       
@@ -181,11 +191,14 @@ class Neuron:
     plot((self.timeLastPlotted, self.timeCurrent), (self.potentialLastPlotted, self.potential), self.plotColor)  # [graph]
     self.timeLastPlotted = self.timeCurrent
     self.potentialLastPlotted = self.potential
+  
+  def __str__(self):
+    return "{}: {{ {} }}".format(self.__class__.__name__, ", ".join("{}: {}".format(attr, getattr(self, attr)) for attr in self.__class__._str_attrs))
 
 
 class NeuronGroup:
   default_bounds = np.float32([[-50.0, -50.0, -5.0], [50.0, 50.0, 5.0]])
-  default_distribution = MultivariateNormal(mu=np.float32([0.0, 0.0, 0.0]), cov=(np.float32([400, 400, 4]) * np.identity(3)))
+  default_distribution = MultivariateNormal(mu=np.float32([0.0, 0.0, 0.0]), cov=(np.float32([400, 400, 4]) * np.identity(3, dtype=np.float32)))
   
   def __init__(self, numNeurons=1000, timeNow=0.0, neuronTypes=[Neuron], bounds=default_bounds, distribution=default_distribution):
     self.numNeurons = numNeurons
@@ -198,10 +211,29 @@ class NeuronGroup:
     self.logger = logging.getLogger(__name__)
     self.logger.info("Creating {}".format(self))
     self.logger.debug("Bounds: x: {}, y: {}, z: {}".format(self.bounds[:,0], self.bounds[:,1], self.bounds[:,2]))
-    #self.logger.debug("Distribution: mu: {}, cov: {}".format(self.distribution.mu, self.distribution.cov))  # ugly
-    self.neuronLocations = np.random.multivariate_normal(self.distribution.mu, self.distribution.cov, self.numNeurons)
+    self.neuronLocations = []
+    if isinstance(self.distribution, MultivariateNormal):
+      #self.logger.debug("Distribution: mu: {}, cov: {}".format(self.distribution.mu, self.distribution.cov))  # ugly
+      self.neuronLocations = np.random.multivariate_normal(self.distribution.mu, self.distribution.cov, self.numNeurons)
+    elif isinstance(self.distribution, SymmetricNormal):
+      thetas = np.random.uniform(pi, -pi, self.numNeurons)  # symmetric in any direction around Z axis
+      rads = np.random.normal(self.distribution.mu, self.distribution.sigma, self.numNeurons)  # varies radially
+      xLocs, yLocs = cv2.polarToCart(rads, thetas)
+      zLocs = np.repeat(np.float32([self.distribution.center[2]]), self.numNeurons).reshape((self.numNeurons, 1))  # constant z, repeated as a column vector
+      #self.logger.debug("SymmetricNormal array shapes:- x: {}, y: {}, z: {}".format(xLocs.shape, yLocs.shape, zLocs.shape))
+      self.neuronLocations = np.hstack([self.distribution.center[0] + xLocs, self.distribution.center[1] + yLocs, zLocs])  # build Nx3 numpy array
+    elif isinstance(self.distribution, SymmetricLogNormal):
+      thetas = np.random.uniform(pi, -pi, self.numNeurons)  # symmetric in any direction around Z axis
+      rads = np.random.lognormal(self.distribution.mu, self.distribution.sigma, self.numNeurons)  # varies radially
+      xLocs, yLocs = cv2.polarToCart(rads, thetas)
+      zLocs = np.repeat(np.float32([self.distribution.center[2]]), self.numNeurons).reshape((self.numNeurons, 1))  # constant z, repeated as a column vector
+      #self.logger.debug("SymmetricNormal array shapes:- x: {}, y: {}, z: {}".format(xLocs.shape, yLocs.shape, zLocs.shape))
+      self.neuronLocations = np.hstack([self.distribution.center[0] + xLocs, self.distribution.center[1] + yLocs, zLocs])  # build Nx3 numpy array
+    else:
+      raise ValueError("Unknown distribution type: {}".format(type(self.distribution)))
+    # TODO Include (non-central) F distribution (suitable for rods)
     #print "Neuron locations:\n", self.neuronLocations  # [debug]
-    
+  
     self.neurons = self.numNeurons * [None]
     # TODO Build spatial index using oct-tree
     self.neuronPlotColors = self.numNeurons * [None]
@@ -235,12 +267,12 @@ class NeuronGroup:
     self.logger.debug("Pre: {}, post: {}, #synapses: {}, (avg.: {} per pre-neuron), #disconnected: {}".format(len(self.neurons), len(group.neurons), self.numSynapses, float(self.numSynapses) / len(self.neurons), self.numDisconnectedNeurons))
     self.isConnected = True
   
-  def plotNeuronLocations3D(self, ax=None, showConnections=True, groupColor=None, connectionColor=None):
+  def plotNeuronLocations3D(self, ax=None, showConnections=True, groupColor=None, connectionColor=None, equalScaleZ=False):
     standalone = False
     if ax is None:
       standalone = True
       fig = figure()
-      ax = fig.add_subplot(111, projection='3d')
+      ax = fig.gca(projection='3d')
     
     ax.scatter(self.neuronLocations[:,0], self.neuronLocations[:,1], self.neuronLocations[:,2], c=(self.neuronPlotColors if groupColor is None else groupColor))
     if showConnections and self.isConnected:
@@ -251,9 +283,18 @@ class NeuronGroup:
         for s in n.synapses:
           ax.plot((n.location[0], s.post.location[0]), (n.location[1], s.post.location[1]), (n.location[2], s.post.location[2]), c=(n.plotColor if connectionColor is None else connectionColor))
     
-    if standalone:
-      plot_bounds = [min(self.bounds[0]), max(self.bounds[1])]  # so that the axes are equally scaled
-      ax.auto_scale_xyz(plot_bounds, plot_bounds, plot_bounds)
+    if standalone:  # TODO prevent code duplication
+      plot_bounds = self.bounds
+      plot_sizes = (plot_bounds[1] - plot_bounds[0])
+      max_plot_size = max(plot_sizes)
+      plot_centers = (plot_bounds[0] + plot_bounds[1]) / 2
+      x_bounds = [plot_centers[0] - max_plot_size / 2, plot_centers[0] + max_plot_size / 2]
+      y_bounds = [plot_centers[1] - max_plot_size / 2, plot_centers[1] + max_plot_size / 2]
+      if equalScaleZ:
+        z_bounds = [plot_centers[2] - max_plot_size / 2, plot_centers[2] + max_plot_size / 2]  # Z axis scaled the same way as rest
+      else:
+        z_bounds =  plot_bounds[:, 2]  # separate scale for Z axis
+      ax.auto_scale_xyz(x_bounds, y_bounds, z_bounds)
       ax.set_xlabel("X")
       ax.set_ylabel("Y")
       ax.set_zlabel("Z")
@@ -266,18 +307,33 @@ class NeuronGroup:
     return "NeuronGroup: {{ numNeurons: {}, neuronTypes: [{}], bounds: {}, distribution: {} }}".format(self.numNeurons, ", ".join(t.__name__ for t in self.neuronTypes), repr(self.bounds), self.distribution)
 
 
-def plotNeuronGroups(neuronGroups, showConnections=True, groupColors=None, connectionColors=None):
+def plotNeuronGroups(neuronGroups, groupColors=None, showConnections=True, connectionColors=None, equalScaleZ=False):
   if groupColors == None:
     groupColors = [None] * len(neuronGroups)
   if connectionColors == None:
     connectionColors = [None] * len(neuronGroups)
+  
   fig = figure()
-  ax = fig.add_subplot(111, projection='3d')
-  plot_bounds = [np.inf, -np.inf]
+  ax = fig.gca(projection='3d')  # effectively same as fig.add_subplot(111, projection='3d')
+  
+  plot_bounds = np.float32([np.repeat(np.inf, 3), np.repeat(-np.inf, 3)])
   for group, groupColor, connectionColor in zip(neuronGroups, groupColors, connectionColors):
     group.plotNeuronLocations3D(ax, showConnections=showConnections, groupColor=groupColor, connectionColor=connectionColor)
-    plot_bounds = [min(plot_bounds[0], min(group.bounds[0])), max(plot_bounds[1], max(group.bounds[1]))]  # so that the axes are equally scaled
-  ax.auto_scale_xyz(plot_bounds, plot_bounds, plot_bounds)
+    plot_bounds[0, :] = np.minimum(plot_bounds[0], group.bounds[0])
+    plot_bounds[1, :] = np.maximum(plot_bounds[1], group.bounds[1])
+  
+  plot_sizes = (plot_bounds[1] - plot_bounds[0])
+  max_plot_size = max(plot_sizes)
+  plot_centers = (plot_bounds[0] + plot_bounds[1]) / 2
+  x_bounds = [plot_centers[0] - max_plot_size / 2, plot_centers[0] + max_plot_size / 2]
+  y_bounds = [plot_centers[1] - max_plot_size / 2, plot_centers[1] + max_plot_size / 2]
+  if equalScaleZ:
+    z_bounds = [plot_centers[2] - max_plot_size / 2, plot_centers[2] + max_plot_size / 2]  # Z axis scaled the same way as rest
+  else:
+    z_bounds =  plot_bounds[:, 2]  # separate scale for Z axis
+  ax.auto_scale_xyz(x_bounds, y_bounds, z_bounds)
+  
+  ax.set_aspect('equal')
   ax.set_xlabel("X")
   ax.set_ylabel("Y")
   ax.set_zlabel("Z")
@@ -285,7 +341,7 @@ def plotNeuronGroups(neuronGroups, showConnections=True, groupColors=None, conne
   show()
 
 
-if __name__ == "__main__":
+def test_neuronGroup():
   logging.basicConfig(format="%(levelname)s | %(name)s | %(funcName)s() | %(message)s", level=logging.DEBUG)  # sets up basic logging, if it's not already configured
   startTime = time()
   timeNow = 0.0
@@ -294,5 +350,10 @@ if __name__ == "__main__":
   growthConeDirection = group2.distribution.mu - group1.distribution.mu
   growthConeDirection /= np.linalg.norm(growthConeDirection, ord=2)  # need a unit vector
   group1.connectWith(group2, maxConnectionsPerNeuron=25, growthCone=GrowthCone(growthConeDirection))
-  plotNeuronGroups([group1, group2], showConnections=True, groupColors=['b', 'r'], connectionColors=[None, None])
-  # NOTE: For connectionColors, pass None to draw connection lines with pre-neuron's color; or specify colors explicitly: connectionColors=[(0.9, 0.8, 1.0, 0.5), None]
+  #group2.plotNeuronLocations3D(equalScaleZ=True)  # e.g.: plot a single neuron group
+  plotNeuronGroups([group1, group2], groupColors=['b', 'r'], showConnections=True, connectionColors=[None, None], equalScaleZ=True)
+  # NOTE: For connectionColors, pass None to draw connection lines with pre-neuron's color; or specify colors explicitly, e.g.: connectionColors=[(0.9, 0.8, 1.0, 0.5), None]
+
+
+if __name__ == "__main__":
+  test_neuronGroup()
