@@ -4,6 +4,7 @@ import logging
 from math import sqrt
 import random
 import itertools
+from unittest import TestCase
 import numpy as np
 import cv2
 
@@ -12,6 +13,7 @@ from lumos.base import FrameProcessor
 from lumos.input import InputDevice, run
 
 from matplotlib.pyplot import figure, show
+from matplotlib.colors import hsv_to_rgb
 
 from ..neuron import Neuron, NeuronGroup, MultivariateNormal, SymmetricLogNormal, plotNeuronGroups
 from .photoreceptor import Rod, Cone
@@ -36,7 +38,9 @@ class Retina:
     self.rodDistribution = SymmetricLogNormal(mu=5.0, sigma=0.5, center=self.center)
     self.rodPlotColor = 'darkmagenta'
     self.coneDistribution = MultivariateNormal(mu=self.center, cov=(np.float32([500.0, 500.0, 1.0]) * np.identity(3, dtype=np.float32)))
+    # TODO Create cone populations of different types with their respective spatial distributions (e.g. blue cones are mostly spread out)
     self.conePlotColor = 'darkgreen'
+    self.conePlotColorsByType = [hsv_to_rgb(np.float32([[[coneType.hueResponse.mu / 180.0, 1.0, 1.0]]]))[0, 0] for coneType in Cone.cone_types]
     
     # Image and related members
     self.imageBGR = np.zeros((self.imageSize[1], self.imageSize[0], 3), dtype=np.uint8)
@@ -91,6 +95,40 @@ class Retina:
     ax.set_ylabel("Density (# per {:.2f}*{:.2f} pixel^2 area)".format(cellWidth, cellHeight))
     ax.set_title("Photoreceptor density in simulated retina")
     ax.legend()
+    
+    if standalone:
+      show()
+  
+  def plotConeSensitivities(self, ax=None):
+    # Check if axis has been supplied; if not, create new single-axis (-plot) figure
+    standalone = False
+    if ax is None:
+      standalone = True
+      fig = figure()
+      ax = fig.gca()  # effectively same as fig.add_subplot(111)
+    
+    # Histogram parameters to bin sensitivity over hue range
+    numBins = 60
+    
+    # Plot histogram of cone sensitivities (hues)
+    #coneHues = [cone.hue for cone in self.cones.neurons]  # all hues, no grouping
+    coneHuesByType = [[cone.hue for cone in coneSet] for coneSet in ((cone for cone in self.cones.neurons if cone.coneType == coneType) for coneType in Cone.cone_types)]  # hues grouped by type
+    nums, bins, patches = ax.hist(coneHuesByType, bins=numBins, range=(0, 180), color=self.conePlotColorsByType, alpha=0.8, histtype='stepfilled', label='Cone types')
+    ax.set_xlabel("Hue (degrees, 0..180)")
+    ax.set_ylabel("Count (# of cones)")
+    ax.set_title("Cone sensitivity distribution in simulated retina")
+    ax.legend([coneType.name for coneType in Cone.cone_types])
+    
+    '''
+    # Plot histogram of cone sensitivities (frequencies) [TODO debug this]
+    coneFreqs = [cone.freq for cone in self.cones.neurons]  # all frequencies, no grouping
+    coneFreqsByType = [[cone.freq for cone in coneSet] for coneSet in ((cone for cone in self.cones.neurons if cone.coneType == coneType) for coneType in Cone.cone_types)]  # frequencies grouped by type
+    nums, bins, patches = ax.hist(coneFreqsByType, bins=numBins, color=self.conePlotColorsByType, alpha=0.8, histtype='stepfilled', label='Cone types')
+    ax.set_xlabel("Frequency (nm)")
+    ax.set_ylabel("Count (# of cones)")
+    ax.set_title("Cone sensitivity distribution in simulated retina")
+    ax.legend([coneType.name for coneType in Cone.cone_types])
+    '''
     
     if standalone:
       show()
@@ -160,16 +198,20 @@ class Projector(FrameProcessor):
     self.logger.debug("Focus rect: {}".format(self.focusRect))
 
 
-def test_photoreceptors():
-  logging.basicConfig(format="%(levelname)s | %(name)s | %(funcName)s() | %(message)s", level=logging.DEBUG)  # sets up basic logging, if it's not already configured
-  retina = Retina()
-  retina.plotPhotoreceptors3D()
-  retina.plotPhotoreceptorDensities()
-
-
-def test_projection():
-  run(Projector, description="Test application that uses a Projector to run image input through a Retina.")
+class TestRetina(TestCase):
+  # TODO Move to nap.vision.tests?
+  def setUp(self):
+    Context.createInstance()
+  
+  def test_photoreceptors(self):
+    retina = Retina()
+    retina.plotPhotoreceptors3D()
+    retina.plotPhotoreceptorDensities()
+    retina.plotConeSensitivities()
+  
+  def test_projector(self):
+    run(Projector, description="Test application that uses a Projector to run image input through a Retina.")
 
 
 if __name__ == "__main__":
-  test_projection()
+  TestRetina('test_projector').run()
