@@ -140,7 +140,9 @@ class Projector(FrameProcessor):
     # Compute image rect bounds - constant screen area where image is copied: (left, right, top, bottom)
     # TODO Ensure rect format (left, right, top, bottom) doesn't clash with OpenCV convention (left, top, width, height)
     #      Or, create a versatile utility class Rect with appropriate properties and conversions
-    self.imageRect = np.int_([self.screenSize[0] / 2 - self.imageSize[0] / 2, self.screenSize[0] / 2 + self.imageSize[0] / 2, self.screenSize[1] / 2 - self.imageSize[1] / 2, self.screenSize[1] / 2 + self.imageSize[1] / 2])
+    left = self.screenSize[0] / 2 - self.imageSize[0] / 2
+    top = self.screenSize[1] / 2 - self.imageSize[1] / 2
+    self.imageRect = np.int_([left, left + self.imageSize[0], top, top + self.imageSize[1]])
     self.logger.debug("Image rect: {}".format(self.imageRect))
   
   def shiftFocus(self, deltaX=0, deltaY=0):
@@ -152,7 +154,9 @@ class Projector(FrameProcessor):
   
   def updateFocusRect(self):
     # Compute focus rect bounds - varying screen area that is copied to retina: (left, right, top, bottom)
-    self.focusRect = np.int_([self.focusPoint[0] - self.retina.imageSize[0] / 2, self.focusPoint[0] + self.retina.imageSize[0] / 2, self.focusPoint[1] - self.retina.imageSize[1] / 2, self.focusPoint[1] + self.retina.imageSize[1] / 2])
+    left = self.focusPoint[0] - self.retina.imageSize[0] / 2
+    top = self.focusPoint[1] - self.retina.imageSize[1] / 2
+    self.focusRect = np.int_([left, left + self.retina.imageSize[0], top, top + self.retina.imageSize[1]])
     self.logger.debug("Focus rect: {}".format(self.focusRect))
 
 
@@ -163,9 +167,9 @@ def test_photoreceptors():
   retina.plotPhotoreceptorDensities()
 
 
-def test_run():
-  run(Projector)
+def test_projection():
+  run(Projector, description="Test application that uses a Projector to run image input through a Retina.")
 
 
 if __name__ == "__main__":
-  test_run()
+  test_projection()
