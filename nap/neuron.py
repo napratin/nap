@@ -3,6 +3,7 @@
 import logging
 from time import time
 from math import exp, pi
+import random
 from collections import namedtuple, deque
 import numpy as np
 import cv2
@@ -104,6 +105,8 @@ class Neuron:
   
   id_ctr = 0  # auto-incremented counter to assign unique IDs to instances
   _str_attrs = ['id', 'location', 'potential']  # which attributes to include in string representation; subclasses can override this
+  p_factor = 1.0  # factor used to scale update probability
+  min_p = 0.15  # minimum update probability, to prevent starving; maximum is implicitly 1.0
   
   def __init__(self, location, timeNow):
     self.id = Neuron.id_ctr
@@ -113,7 +116,9 @@ class Neuron:
     self.deltaTime = 0.0
     
     self.potential = np.random.normal(resting_potential.mu, resting_potential.sigma)  # current membrane potential
+    self.potentialLastUpdated = self.potential  # last computed potential, useful for calculating rate of change
     self.potentialAccumulated = 0.0  # potential accumulated from synaptic inputs
+    self.p = np.random.uniform(0.0, 0.25)  # update probability: [0, 1] (actually, no need to clip at 1)
     
     self.synapses = list()
     self.gatedSynapses = list()
@@ -134,6 +139,10 @@ class Neuron:
   def accumulate(self, deltaPotential):
     self.potentialAccumulated += deltaPotential
   
+  def updateWithP(self, timeNow):
+    if self.p >= random.random():
+      self.update(timeNow)
+  
   def update(self, timeNow):
     self.timeCurrent = timeNow
     self.deltaTime = self.timeCurrent - self.timeLastUpdated
@@ -141,6 +150,8 @@ class Neuron:
       return
     
     self.updatePotential()
+    self.updateP()
+    self.potentialLastUpdated = self.potential
     self.timeLastUpdated = self.timeCurrent
   
   def updatePotential(self):
@@ -165,6 +176,10 @@ class Neuron:
     #print self.id, self.timeCurrent, self.potential  # [log: potential]
     # TODO This is the ideal point to gather potential observation; "Fire action potential" step should come immediately after this (instead of at the beginning of updatePotential) in order to prevent any posible delays
     # TODO Implement neuron-level inhibition (?)
+  
+  def updateP(self):
+    self.p = np.clip(self.p_factor * abs(self.potential - self.potentialLastUpdated) / self.deltaTime, self.min_p, 1.0)
+    #if self.p > 1.0: self.p = 1.0  # no need to clip at 1 because of the way this is used
   
   def actionPotential_approximate(self):
     # Action potential - approximate method: Instantaneous rise
@@ -200,7 +215,7 @@ class NeuronGroup:
   default_bounds = np.float32([[-50.0, -50.0, -5.0], [50.0, 50.0, 5.0]])
   default_distribution = MultivariateNormal(mu=np.float32([0.0, 0.0, 0.0]), cov=(np.float32([400, 400, 4]) * np.identity(3, dtype=np.float32)))
   
-  def __init__(self, numNeurons=1000, timeNow=0.0, neuronTypes=[Neuron], bounds=default_bounds, distribution=default_distribution):
+  def __init__(self, numNeurons=1000, timeNow=0.0, neuronTypes=[Neuron], bounds=default_bounds, distribution=default_distribution, **kwargs):
     self.numNeurons = numNeurons
     self.timeNow = timeNow
     self.neuronTypes = neuronTypes
@@ -232,13 +247,19 @@ class NeuronGroup:
     else:
       raise ValueError("Unknown distribution type: {}".format(type(self.distribution)))
     # TODO Include (non-central) F distribution (suitable for rods)
+    
+    # Clip (clamp) neuron locations that are outside bounds
+    np.clip(self.neuronLocations[:, 0], self.bounds[0, 0], self.bounds[1, 0], out=self.neuronLocations[:, 0])
+    np.clip(self.neuronLocations[:, 1], self.bounds[0, 1], self.bounds[1, 1], out=self.neuronLocations[:, 1])
+    #print "Out-of-bounds neuron locations:", [loc for loc in self.neuronLocations if not ((self.bounds[0, 0] <= loc[0] <= self.bounds[1, 0]) and (self.bounds[0, 1] <= loc[1] <= self.bounds[1, 1]))]  # [debug]
+    
     #print "Neuron locations:\n", self.neuronLocations  # [debug]
   
     self.neurons = self.numNeurons * [None]
     # TODO Build spatial index using oct-tree
     self.neuronPlotColors = self.numNeurons * [None]
     for i in xrange(self.numNeurons):
-      self.neurons[i] = Neuron(self.neuronLocations[i], self.timeNow)
+      self.neurons[i] = random.choice(self.neuronTypes)(self.neuronLocations[i], self.timeNow, **kwargs)
       self.neuronPlotColors[i] = self.neurons[i].plotColor
   
   def connectWith(self, group, maxConnectionsPerNeuron, growthCone):
