@@ -22,6 +22,7 @@ class Photoreceptor(Neuron):
 class Rod(Photoreceptor):
   """A type of photoreceptor that is sensitive only to the intensity of light."""
   
+  # NOTE Rod cells are also sensitive to a particular frequency range (peak around 498nm), which is not captured in this model
   value_to_delta_potential = 1.0 / (8 * 255)  # multiplication factor to convert image pixel value (0..255) to delta cell potential (approx. range: 0.01..0.1)
   
   def __init__(self, location, timeNow, retina=None, pixel=None, coneType=None):
@@ -67,7 +68,8 @@ class ConeType:
 class Cone(Photoreceptor):
   """A type of photoreceptor that is sensitive to the frequency (color) of light."""
   
-  cone_types = [ ConeType('S', Normal(mu=440.0, sigma=20.0), 0.9, 0.04), ConeType('M', Normal(mu=540.0, sigma=25.0), 0.5, 0.32), ConeType('L', Normal(mu=570.0, sigma=30.0), 0.5, 0.64) ]  # S = blue, M = green, L = red [TODO check values, esp. sensitivity and occurrence]
+  # NOTE The ratio of different types of cone cells can vary a lot from individual to individual; here we pick a representative distribution
+  cone_types = [ ConeType('S', Normal(mu=440.0, sigma=20.0), 1.0, 0.04), ConeType('M', Normal(mu=540.0, sigma=25.0), 0.5, 0.32), ConeType('L', Normal(mu=570.0, sigma=30.0), 0.4, 0.64) ]  # S = blue, M = green, L = red [TODO check values, esp. sensitivity and occurrence]
   cone_probabilities = np.float32([cone_type.occurrence for cone_type in cone_types])  # occurrence probabilities [TODO normalize so that they sum to 1?]
   
   #cone_hues = { 'L': 20, 'M': 50, 'S': 120 }  # S = blue, M = green, L = red [deprecated]
