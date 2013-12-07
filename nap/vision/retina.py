@@ -51,8 +51,7 @@ class Retina:
     # Create neuron groups
     self.rods = NeuronGroup(numNeurons=self.num_rods, timeNow=timeNow, neuronTypes=[Rod], bounds=self.bounds, distribution=self.rodDistribution, retina=self)
     self.cones = NeuronGroup(numNeurons=self.num_cones, timeNow=timeNow, neuronTypes=[Cone], bounds=self.bounds, distribution=self.coneDistribution, retina=self)
-    
-    # TODO Configure neuron groups (set cone sensitivity, etc.), if needed
+    self.coneTypeNames = [coneType.name for coneType in Cone.cone_types]  # mainly for plotting
   
   def update(self, timeNow):
     self.timeNow = timeNow
@@ -109,6 +108,7 @@ class Retina:
     
     # Histogram parameters to bin sensitivity over hue range
     numBins = 60
+    conesByType = [[cone for cone in self.cones.neurons if cone.coneType == coneType] for coneType in Cone.cone_types]
     
     '''
     # Plot histogram of cone sensitivities (hues)
@@ -133,14 +133,14 @@ class Retina:
     # Plot histogram of cone sensitivities (frequency responses)
     #coneFreqs = [cone.freq for cone in self.cones.neurons]  # all frequencies, no grouping
     #coneSens = [cone.coneType.sensitivity for cone in self.cones.neurons]  # all sensitivities, no grouping
-    coneFreqsByType = [[cone.freq for cone in coneSet] for coneSet in ((cone for cone in self.cones.neurons if cone.coneType == coneType) for coneType in Cone.cone_types)]  # frequencies grouped by type
-    coneSensByType = [[cone.coneType.sensitivity for cone in coneSet] for coneSet in ((cone for cone in self.cones.neurons if cone.coneType == coneType) for coneType in Cone.cone_types)]  # sensitivities grouped by type
-    nums, bins, patches = ax.hist(coneFreqsByType, weights=coneSensByType, bins=numBins, color=self.conePlotColorsByType, alpha=0.8, histtype='stepfilled', label='Cone types')
+    coneFreqsByType = [[cone.freq for cone in coneSet] for coneSet in conesByType]  # frequencies grouped by type
+    coneSensByType = [[cone.coneType.sensitivity for cone in coneSet] for coneSet in conesByType]  # sensitivities grouped by type
+    nums, bins, patches = ax.hist(coneFreqsByType, weights=coneSensByType, bins=numBins, color=self.conePlotColorsByType, alpha=0.8, histtype='stepfilled', label=self.coneTypeNames)
     ax.set_ylim([0, np.max(nums)])  # NOTE this shouldn't be needed, but without it Y-axis is not getting scaled properly
     ax.set_xlabel("Frequency (nm)")
     ax.set_ylabel("Weighted count (# of cones * sensitivity)")
     ax.set_title("Cone response distribution in simulated retina")
-    ax.legend([coneType.name for coneType in Cone.cone_types])
+    ax.legend()
     
     #print "\n".join("{}: {} {} {}".format(bin, n0, n1, n2) for bin, n0, n1, n2 in zip(bins, nums[0], nums[1], nums[2]))  # [debug]
     
