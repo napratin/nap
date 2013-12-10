@@ -2,7 +2,7 @@ from time import time, sleep
 from unittest import TestCase
 import numpy as np
 
-from nap.neuron import Neuron, resting_potential, threshold_potential, action_potential_peak, action_potential_trough, synaptic_strength
+from nap.neuron import Neuron, threshold_potential, action_potential_peak, action_potential_trough, synaptic_strength
 
 from matplotlib.pyplot import figure, plot, subplot, subplots_adjust, draw, pause, hold, show, xlim, ylim, title, xlabel, ylabel, axhline
 import matplotlib as mpl
@@ -27,7 +27,7 @@ class TestNeuron(TestCase):
     if xlab is not None: xlabel(xlab)
     if ylab is not None: ylabel(ylab)
     
-    axhline(y = resting_potential.mu, color = 'k', linestyle = '--')
+    axhline(y = Neuron.resting_potential.mu, color = 'k', linestyle = '--')
     axhline(y = threshold_potential, color = 'r', linestyle = '--')
     axhline(y = action_potential_peak, color = 'c', linestyle = '--')
     axhline(y = action_potential_trough.mu, color = 'm', linestyle = '--')

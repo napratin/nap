@@ -15,19 +15,21 @@ from lumos.input import InputDevice, run
 from matplotlib.pyplot import figure, show
 from matplotlib.colors import hsv_to_rgb
 
-from ..neuron import Neuron, NeuronGroup, MultivariateNormal, SymmetricLogNormal, plotNeuronGroups
+from ..neuron import Neuron, NeuronGroup, GrowthCone, MultivariateNormal, SymmetricLogNormal, plotNeuronGroups
 from .photoreceptor import Rod, Cone
+from .bipolar import BipolarCell
 
 class Retina:
   """A multi-layered surface for hosting different types of neurons that make up a retina."""
   
   num_rods = 10000  # humans: 90-120 million
   num_cones = 1000  # humans: 4.5-6 million
+  num_bipolar_cells = 2000
   
   default_image_size = (480, 480)
   
   def __init__(self, imageSize=default_image_size, timeNow=0.0):
-    # Initialize members, parameters
+    # * Initialize members, parameters
     self.context = Context.getInstance()
     self.logger = logging.getLogger(__name__)
     self.imageSize = imageSize
@@ -37,33 +39,73 @@ class Retina:
     self.logger.debug("Retina center: {}, image size: {}".format(self.center, self.imageSize))
     self.rodDistribution = SymmetricLogNormal(mu=5.0, sigma=0.5, center=self.center)
     self.rodPlotColor = 'darkmagenta'
-    self.coneDistribution = MultivariateNormal(mu=self.center, cov=(np.float32([500.0, 500.0, 1.0]) * np.identity(3, dtype=np.float32)))
+    self.coneDistribution = MultivariateNormal(mu=self.center, cov=(np.float32([1000.0, 1000.0, 1.0]) * np.identity(3, dtype=np.float32)))
     # TODO Create cone populations of different types with their respective spatial distributions (e.g. blue cones are mostly spread out)
     self.conePlotColor = 'darkgreen'
     self.conePlotColorsByType = [hsv_to_rgb(np.float32([[[coneType.hueResponse.mu / 180.0, 1.0, 1.0]]]))[0, 0] for coneType in Cone.cone_types]
+    self.bipolarCellDistribution = MultivariateNormal(mu=self.center + np.float32([0.0, 0.0, 10.0]), cov=(np.float32([16000.0, 16000.0, 1.0]) * np.identity(3, dtype=np.float32)))
+    self.bipolarCellPlotColor = 'orange'
     
-    # Image and related members
+    # * Image and related members
+    # ** RGB and HSV images
     self.imageBGR = np.zeros((self.imageSize[1], self.imageSize[0], 3), dtype=np.uint8)
     self.imageHSV = np.zeros((self.imageSize[1], self.imageSize[0], 3), dtype=np.uint8)
+    self.imageH = np.zeros((self.imageSize[1], self.imageSize[0], 1), dtype=np.uint8)
+    self.imageS = np.zeros((self.imageSize[1], self.imageSize[0], 1), dtype=np.uint8)
+    self.imageV = np.zeros((self.imageSize[1], self.imageSize[0], 1), dtype=np.uint8)
+    
+    # ** Freq/hue-dependent response images for rods and different cone types
+    self.imageRod = np.zeros((self.imageSize[1], self.imageSize[0], 1), dtype=np.float32)
+    self.imagesCone = dict()  # NOTE dict keys must match names of Cone.cone_types
+    self.imagesCone['S'] = np.zeros((self.imageSize[1], self.imageSize[0], 1), dtype=np.float32)
+    self.imagesCone['M'] = np.zeros((self.imageSize[1], self.imageSize[0], 1), dtype=np.float32)
+    self.imagesCone['L'] = np.zeros((self.imageSize[1], self.imageSize[0], 1), dtype=np.float32)
+    
+    # ** Output image
     if self.context.options.gui:
       self.imageOut = np.zeros((self.imageSize[1], self.imageSize[0], 3), dtype=np.uint8)
     
-    # Create neuron groups
-    self.rods = NeuronGroup(numNeurons=self.num_rods, timeNow=timeNow, neuronTypes=[Rod], bounds=self.bounds, distribution=self.rodDistribution, retina=self)
-    self.cones = NeuronGroup(numNeurons=self.num_cones, timeNow=timeNow, neuronTypes=[Cone], bounds=self.bounds, distribution=self.coneDistribution, retina=self)
+    # * Create neuron groups
+    # ** Photoreceptors
+    self.rods = NeuronGroup(numNeurons=self.num_rods, timeNow=self.timeNow, neuronTypes=[Rod], bounds=self.bounds, distribution=self.rodDistribution, retina=self)
+    self.cones = NeuronGroup(numNeurons=self.num_cones, timeNow=self.timeNow, neuronTypes=[Cone], bounds=self.bounds, distribution=self.coneDistribution, retina=self)
     self.coneTypeNames = [coneType.name for coneType in Cone.cone_types]  # mainly for plotting
+    
+    # ** Bipolar cells
+    self.bipolarCells = NeuronGroup(numNeurons=self.num_bipolar_cells, timeNow=self.timeNow, neuronTypes=[BipolarCell], bounds=self.bounds, distribution=self.bipolarCellDistribution)
+    
+    # * Connect neuron groups
+    growthConeDirection = self.bipolarCells.distribution.mu - self.cones.distribution.mu  # NOTE only using cone distribution center
+    growthConeDirection /= np.linalg.norm(growthConeDirection, ord=2)  # need a unit vector
+    #self.cones.connectWith(self.bipolarCells, maxConnectionsPerNeuron=10, growthCone=GrowthCone(growthConeDirection, spreadFactor=1))
+    #self.rods.connectWith(self.bipolarCells, maxConnectionsPerNeuron=25, growthCone=GrowthCone(growthConeDirection, spreadFactor=1))
+    # TODO Connection currently takes a long time; speed this up with better parameterization and spatial search
   
   def update(self, timeNow):
     self.timeNow = timeNow
     self.logger.debug("Retina update @ {}".format(self.timeNow))
     self.imageHSV = cv2.cvtColor(self.imageBGR, cv2.COLOR_BGR2HSV)
+    self.imageH, self.imageS, self.imageV = cv2.split(self.imageHSV)
+    # TODO Need non-linear response to hue, sat, val (less dependent on sat, val for cones)
+    self.imageRod = np.float32(180 - cv2.absdiff(self.imageH, Rod.rod_type.hue) % 180) * 200 * self.imageV * Rod.rod_type.responseFactor  # hack: use constant sat = 200 to make response independent of saturation
+    self.imagesCone['S'] = np.float32(180 - cv2.absdiff(self.imageH, Cone.cone_types[0].hue) % 180) * self.imageS * self.imageV * Cone.cone_types[0].responseFactor
+    self.imagesCone['M'] = np.float32(180 - cv2.absdiff(self.imageH, Cone.cone_types[1].hue) % 180) * self.imageS * self.imageV * Cone.cone_types[1].responseFactor
+    self.imagesCone['L'] = np.float32(180 - cv2.absdiff(self.imageH, Cone.cone_types[2].hue) % 180) * self.imageS * self.imageV * Cone.cone_types[2].responseFactor
+    if self.context.options.gui:
+      #cv2.imshow("Hue", self.imageH)
+      #cv2.imshow("Saturation", self.imageS)
+      #cv2.imshow("Value", self.imageV)
+      cv2.imshow("Rod response", self.imageRod)
+      cv2.imshow("S-cone response", self.imagesCone['S'])
+      cv2.imshow("M-cone response", self.imagesCone['M'])
+      cv2.imshow("L-cone response", self.imagesCone['L'])
     for photoreceptor in itertools.chain(self.rods.neurons, self.cones.neurons):
       photoreceptor.updateWithP(self.timeNow)  # update probabilistically
       if self.context.options.gui:
         self.imageOut[photoreceptor.pixel[1], photoreceptor.pixel[0], :] = photoreceptor.pixelValue  # render
   
   def plotPhotoreceptors3D(self):
-    plotNeuronGroups([self.rods, self.cones], groupColors=[self.rodPlotColor, self.conePlotColor], showConnections=False, equalScaleZ=True)
+    plotNeuronGroups([self.rods, self.cones, self.bipolarCells], groupColors=[self.rodPlotColor, self.conePlotColor, self.bipolarCellPlotColor], showConnections=True, equalScaleZ=True)
   
   def plotPhotoreceptorDensities(self, ax=None):
     # Check if axis has been supplied; if not, create new single-axis (-plot) figure
@@ -132,9 +174,9 @@ class Retina:
     '''
     # Plot histogram of cone sensitivities (frequency responses)
     #coneFreqs = [cone.freq for cone in self.cones.neurons]  # all frequencies, no grouping
-    #coneSens = [cone.coneType.sensitivity for cone in self.cones.neurons]  # all sensitivities, no grouping
+    #coneSens = [cone.coneType.hueSensitivity for cone in self.cones.neurons]  # all sensitivities, no grouping
     coneFreqsByType = [[cone.freq for cone in coneSet] for coneSet in conesByType]  # frequencies grouped by type
-    coneSensByType = [[cone.coneType.sensitivity for cone in coneSet] for coneSet in conesByType]  # sensitivities grouped by type
+    coneSensByType = [[cone.coneType.hueSensitivity for cone in coneSet] for coneSet in conesByType]  # sensitivities grouped by type
     nums, bins, patches = ax.hist(coneFreqsByType, weights=coneSensByType, bins=numBins, color=self.conePlotColorsByType, alpha=0.8, histtype='stepfilled', label=self.coneTypeNames)
     ax.set_ylim([0, np.max(nums)])  # NOTE this shouldn't be needed, but without it Y-axis is not getting scaled properly
     ax.set_xlabel("Frequency (nm)")
@@ -228,4 +270,10 @@ class TestRetina(TestCase):
 
 
 if __name__ == "__main__":
-  TestRetina('test_projector').run()
+  runner = TestRetina('test_projector').run
+  context = Context.createInstance()
+  if context.options.debug:
+    import pdb
+    pdb.runcall(runner)
+  else:
+    runner()

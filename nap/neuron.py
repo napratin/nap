@@ -18,7 +18,6 @@ SymmetricNormal = namedtuple('SymmetricNormal', Normal._fields + ('center',))
 SymmetricLogNormal = namedtuple('SymmetricLogNormal', SymmetricNormal._fields)
 
 # Neuron membrane potential levels
-resting_potential = Normal(-0.07, 0.001)  # volts (mean, s.d.); resting / equillibrium potential
 threshold_potential = -0.055  # volts; level that triggers action potential
 action_potential_peak = 0.04  # volts; maximum potential reached during an action potential event
 action_potential_trough = Normal(-0.08, 0.001)  # volts; minimum potential reached due to hyperpolarization during an action potential event
@@ -27,7 +26,6 @@ action_potential_trough = Normal(-0.08, 0.001)  # volts; minimum potential reach
 synaptic_strength = Normal(0.011, 0.001)  # essentially volts (mean, s.d.); potential transmitted to post-synaptic neuron when the pre-synaptic neuron undergoes an action potential event
 
 # Timing, decay and dynamic action potential parameters
-potential_decay = 1.0  # per-sec.; rate at which potential decays trying to reach equillibrium
 self_depolarization_rate = 0.75  # volts per sec.; rate at which potential rises during an action potential event
 refractory_period = 0.1  # secs.; minimum time between two action potentials (should be an emergent effect when simulating action potential in detail)
 min_update_time = 0.025  # secs.; minimum time between updates
@@ -105,6 +103,10 @@ class Neuron:
   
   id_ctr = 0  # auto-incremented counter to assign unique IDs to instances
   _str_attrs = ['id', 'location', 'potential']  # which attributes to include in string representation; subclasses can override this
+  
+  resting_potential = Normal(-0.07, 0.001)  # volts (mean, s.d.); resting / equillibrium potential
+  potential_decay = 1.0  # per-sec.; rate at which potential decays trying to reach equillibrium
+  
   p_factor = 1.0  # factor used to scale update probability
   min_p = 0.15  # minimum update probability, to prevent starving; maximum is implicitly 1.0
   
@@ -115,7 +117,7 @@ class Neuron:
     self.timeLastFired = self.timeLastUpdated = self.timeCurrent = timeNow
     self.deltaTime = 0.0
     
-    self.potential = np.random.normal(resting_potential.mu, resting_potential.sigma)  # current membrane potential
+    self.potential = np.random.normal(self.resting_potential.mu, self.resting_potential.sigma)  # current membrane potential
     self.potentialLastUpdated = self.potential  # last computed potential, useful for calculating rate of change
     self.potentialAccumulated = 0.0  # potential accumulated from synaptic inputs
     self.p = np.random.uniform(0.0, 0.25)  # update probability: [0, 1] (actually, no need to clip at 1)
@@ -162,8 +164,8 @@ class Neuron:
       self.potential = np.random.normal(action_potential_trough.mu, action_potential_trough.sigma)  # repolarization/falling phase (instantaneous)
     
     # Decay potential
-    #self.potential = resting_potential.mu + (self.potential - resting_potential.mu) * exp(-potential_decay * self.deltaTime)  # exponential decay
-    self.potential -= potential_decay * (self.potential - resting_potential.mu) * self.deltaTime  # approximated exponential decay
+    #self.potential = self.resting_potential.mu + (self.potential - self.resting_potential.mu) * exp(-self.potential_decay * self.deltaTime)  # exponential decay
+    self.potential -= self.potential_decay * (self.potential - self.resting_potential.mu) * self.deltaTime  # approximated exponential decay
     
     # Accumulate/integrate incoming potentials
     self.potential += self.potentialAccumulated  # integrate signals accumulated from neighbors
