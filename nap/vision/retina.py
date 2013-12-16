@@ -12,7 +12,7 @@ from lumos.context import Context
 from lumos.base import FrameProcessor
 from lumos.input import InputDevice, run
 
-from matplotlib.pyplot import figure, show
+from matplotlib.pyplot import figure, show, hold, pause
 from matplotlib.colors import hsv_to_rgb
 
 from ..neuron import Neuron, NeuronGroup, GrowthCone, MultivariateNormal, SymmetricLogNormal, plotNeuronGroups
@@ -87,7 +87,7 @@ class Retina:
     self.imageHSV = cv2.cvtColor(self.imageBGR, cv2.COLOR_BGR2HSV)
     self.imageH, self.imageS, self.imageV = cv2.split(self.imageHSV)
     # TODO Need non-linear response to hue, sat, val (less dependent on sat, val for cones)
-    self.imageRod = np.float32(180 - cv2.absdiff(self.imageH, Rod.rod_type.hue) % 180) * 200 * self.imageV * Rod.rod_type.responseFactor  # hack: use constant sat = 200 to make response independent of saturation
+    self.imageRod = np.float32(180 - cv2.absdiff(self.imageH, Rod.rod_type.hue) % 180) * 255 * self.imageV * Rod.rod_type.responseFactor  # hack: use constant sat = 200 to make response independent of saturation
     self.imagesCone['S'] = np.float32(180 - cv2.absdiff(self.imageH, Cone.cone_types[0].hue) % 180) * self.imageS * self.imageV * Cone.cone_types[0].responseFactor
     self.imagesCone['M'] = np.float32(180 - cv2.absdiff(self.imageH, Cone.cone_types[1].hue) % 180) * self.imageS * self.imageV * Cone.cone_types[1].responseFactor
     self.imagesCone['L'] = np.float32(180 - cv2.absdiff(self.imageH, Cone.cone_types[2].hue) % 180) * self.imageS * self.imageV * Cone.cone_types[2].responseFactor
@@ -267,10 +267,61 @@ class TestRetina(TestCase):
   
   def test_projector(self):
     run(Projector, description="Test application that uses a Projector to run image input through a Retina.")
+  
+  def test_rod_potential(self):
+    from ..neuron import action_potential_trough, action_potential_peak
+    
+    class MonitoringProjector(Projector):
+      do_plot = False
+      def __init__(self, retina=None):
+        Projector.__init__(self, retina)
+        
+        # Neuron to monitor
+        self.testRodIdx = 0
+        self.testRod = self.retina.rods.neurons[self.testRodIdx]
+        self.logger.info("Test rod [{}]: {}".format(self.testRodIdx, self.testRod))
+        
+        # Plotting
+        if self.do_plot:
+          self.logger.info("Plotting is enabled")
+          self.fig = figure()
+          hold(True)
+          self.ax = self.fig.gca()
+          self.ax.set_ylim(action_potential_trough.mu - 0.01, action_potential_peak + 0.02)
+          self.ax.set_title("Neuron")
+          self.ax.set_xlabel("Time (s)")
+          self.ax.set_ylabel("Membrane potential (V)")
+      
+      def process(self, imageIn, timeNow):
+        keepRunning, imageOut = Projector.process(self, imageIn, timeNow)
+        self.testRod.p = 1.0  # make sure it updated every iteration
+        if self.do_plot:
+          self.testRod.plot()
+          pause(0.01)
+        print "{}\t{}\t{}\t{}\t{}\t{}".format(timeNow, self.testRod.response, self.testRod.potential, self.testRod.I_e, self.testRod.expDecayFactor, self.testRod.pixelValue)  # [debug, non-GUI]
+        #cv2.circle(imageOut, (self.testRod.pixel[0], self.testRod.pixel[1]), 3, np.uint8([255, 0, 255]))
+        imageOut[self.testRod.pixel[1], self.testRod.pixel[0]] = np.uint8([255, 0, 255])
+        return keepRunning, imageOut
+      
+      def onKeyPress(self, key, keyChar=None):
+        if keyChar == '.':
+          self.testRodIdx = (self.testRodIdx + 1) % len(self.retina.rods.neurons)
+          self.testRod = self.retina.rods.neurons[self.testRodIdx]
+          self.logger.info("[>] Test rod [{}]: {}".format(self.testRodIdx, self.testRod))
+        elif keyChar == ',':
+          self.testRodIdx = (self.testRodIdx - 1) % len(self.retina.rods.neurons)
+          self.testRod = self.retina.rods.neurons[self.testRodIdx]
+          self.logger.info("[<] Test rod [{}]: {}".format(self.testRodIdx, self.testRod))
+        else:
+          return Projector.onKeyPress(self, key, keyChar)
+        return True
+    
+    print "Running MonitoringProjector instance..."
+    run(MonitoringProjector, description="Retina processing with monitor on a single neuron.")
 
 
 if __name__ == "__main__":
-  runner = TestRetina('test_projector').run
+  runner = TestRetina('test_rod_potential').run
   context = Context.createInstance()
   if context.options.debug:
     import pdb

@@ -1,5 +1,6 @@
 """Photoreceptor neuron models."""
 
+from math import exp
 import random
 import numpy as np
 
@@ -10,29 +11,88 @@ class Photoreceptor(Neuron):
   
   _str_attrs = ['id', 'pixel', 'potential']
   
-  resting_potential = Normal(-0.04, 0.001)  # volts (mean, s.d.); resting / equillibrium potential
-  potential_decay = 0.5  # per-sec.; rate at which potential decays trying to reach equillibrium
+  R = 300.0e06  # membrane resistance (~30-700Mohm)
+  C = 3.0e-09  # membrane capacitance (~2-3nF)
+  tau = R * C  # time constant (~100-1000ms)
+  dark_current = 100.0e-12  # convert normalized potential (0..1) to external current I_e (~20-500pA; one study says rods: ~20pA, cones: ~7pA)
+  dark_potential = Neuron.resting_potential.mu + R * dark_current  # -0.04  # mV
   
+  '''
+  potential_decay = 1.0  # per-sec.; rate at which potential decays trying to reach equillibrium
+  response_to_potential = -0.07  # normalized response (0..1) to absolute potential (-0.04..-0.07)
+  response_resistance = 1.0
   response_to_delta_potential = -0.25  # multiplication factor to convert normalized response value (0..1) to delta cell potential (approx. range: 0.01..0.1; negative because photoreceptors hyperpolarize in response to stimulus) [TODO use non-linear relationship based on current potential to avoid overshoot (and perhaps deltaTime as well?)]
-  potential_range = np.float32([action_potential_trough.mu - 3*action_potential_trough.sigma, action_potential_peak])
-  potential_scale = 1.0 / (potential_range[1] - potential_range[0])  # factor used to convert cell potential to image pixel value
+  potential_range = np.float32([action_potential_trough.mu - 3*action_potential_trough.sigma, action_potential_peak])  # [deprecated: photoreceptors don't obey this range]
+  '''
+  potential_scale = 1.0 / abs(Neuron.resting_potential.mu - dark_potential)  # factor used to convert cell potential to image pixel value
   
   def __init__(self, location, timeNow, retina, pixel=None):
     Neuron.__init__(self, location, timeNow)
     self.retina = retina
     self.pixel = pixel if pixel is not None else np.int_(location[:2])
+    self.expDecayFactor = 0.0
+    self.I_e = 0.0
   
   def updatePotential(self):
-    # NOTE Photoreceptors use graded potentials; no action potentials
-    # Accumulate potential
-    self.accumulate(self.response_to_delta_potential * self.response * self.deltaTime)  # TODO don't accumulate, use graded potential instead to directly reach appropriate potential level (with some delay)?
+    '''
+    Phototransduction (NOTE: Photoreceptors use graded potentials; no action potentials)
     
-    # Decay potential
+    Neuron model:
+    V_m: membrane potential, V_r: resting potential
+    R: membrane resistance, C: membrane capacitance
+    I_e: external (input) current
+    
+    I_R = (V_m - V_r) / R  # resistive (leakage) current across membrane as resistor
+    I_C = C * (dV_m / dt)  # capacitive current across membrane as capacitor
+    I_R + I_C = I_e  # Kirschoff's law of conservation of current [NOTE I_e direction]
+    
+    Therefore,
+    I_C = I_e - I_R
+    C * (dV_m / dt) = I_e - ((V_m - V_r) / R)
+    
+    Solving for V_m,
+    V_m = V_r + V(t_0) * (e ^ (-(t - t_0) / tau))           ...when I_e = 0 (discharging)
+    V_m = V_r + R * I_e * (1 - e ^ (-(t - t_0) / tau))      ...when I_e is non-zero (charging)
+      where t_0 = last time, t = current time, V(t_0) = voltage at time t_0 (relative to V_r), tau = R * C, and t is time elapsed since time 0
+    
+    Combining these two states to model simultaneous charging and discharging,
+    V_m = V_r + (V(t_0) * (e ^ (-(t - t_0) / tau))) + (R * I_e * (1 - e ^ (-(t - t_0) / tau)))
+    '''
+    
+    '''
+    # * Method 1: Decay, accumulate potential using regular technique
+    # ** Accumulate/integrate potential change due to response current
+    self.accumulate(self.response_to_delta_potential * self.response * self.deltaTime)  # TODO don't accumulate (potential values are going off the charts), use graded potential instead to directly reach appropriate potential level (with some delay, and dependent on current potential value)?
+    
+    # ** Decay potential
     self.potential -= self.potential_decay * (self.potential - self.resting_potential.mu) * self.deltaTime  # approximated exponential decay
     
-    # Accumulate/integrate incoming potentials
+    # ** Add accumulated potential
     self.potential += self.potentialAccumulated  # integrate signals accumulated from neighbors
     self.potentialAccumulated = 0.0  # reset accumulator (don't want to double count!)
+    '''
+    
+    '''
+    # * Method 2: Two-step - decay, then response - using simplified technique
+    self.potential -= self.potential_decay * (self.potential - self.resting_potential.mu) * self.deltaTime
+    self.potential += self.response_resistance * (self.response_to_potential * self.response) * self.deltaTime
+    '''
+    
+    '''
+    # * Method 3: One-step response and decay (works fine)
+    #self.potential += ((self.response_to_potential * self.response) - self.potential_decay * (self.potential - self.resting_potential.mu)) * self.deltaTime
+    '''
+    
+    # * Method 4: Differential equation solution
+    self.expDecayFactor = exp(-self.deltaTime / self.tau)
+    self.I_e = self.dark_current * (1.0 - self.response)  # I_e = dark_current when response == 0
+    self.potential = self.resting_potential.mu + ((self.potentialLastUpdated - self.resting_potential.mu) * self.expDecayFactor) + (self.R * self.I_e * (1.0 - self.expDecayFactor))  # V_m = V_r + (V(t_0) * (e ^ (-(t - t_0) / tau))) + (R * I_e * (1 - e ^ (-(t - t_0) / tau)))
+    
+    '''
+    # * Method 5: Weighted response effect on potential
+    target_potential = self.resting_potential.mu - self.R * self.response
+    self.potential = (self.potentialLastUpdated + target_potential) / 2
+    '''
 
 
 # TODO Check these values to establish correct mapping between light frequencies (in nm) and color hues (0..180)
@@ -84,9 +144,9 @@ class Rod(Photoreceptor):
   
   def updatePotential(self):
     # Phototransduction: Accumulate some potential based on light's intensity (value) in retina
-    self.response = self.retina.imageRod[self.pixel[1], self.pixel[0]]  # response value computed by retina for each photoreceptor [TODO include sensitivity term here?]
+    self.response = self.retina.imageRod[self.pixel[1], self.pixel[0]]  # response value computed by retina for each photoreceptor
     Photoreceptor.updatePotential(self)
-    self.pixelValue = int(np.clip(abs(self.potential - self.resting_potential.mu) * self.potential_scale * self.retina.imageHSV[self.pixel[1], self.pixel[0]][2], 0, 255))  # deviation from resting potential
+    self.pixelValue = int(np.clip(abs(self.potential - self.dark_potential) * self.potential_scale * self.retina.imageHSV[self.pixel[1], self.pixel[0]][2], 0, 255))  # deviation from dark potential
     #self.pixelValue = int(np.clip((self.potential - self.potential_range[0]) * self.potential_scale * self.retina.imageHSV[self.pixel[1], self.pixel[0]][2], 0, 255))  # potential compared to absolute range
 
 
@@ -111,7 +171,7 @@ class Cone(Photoreceptor):
     # Phototransduction: Accumulate some potential based on light's color (hue), saturation and value in retina
     self.response = self.retina.imagesCone[self.coneType.name][self.pixel[1], self.pixel[0]]  # response value computed by retina for each photoreceptor [TODO include sensitivity term here?]
     Photoreceptor.updatePotential(self)
-    self.pixelValue = np.uint8(np.clip(abs(self.potential - self.resting_potential.mu) * self.potential_scale * self.retina.imageBGR[self.pixel[1], self.pixel[0]], 0, 255))  # deviation from resting potential
+    self.pixelValue = np.uint8(np.clip(abs(self.potential - self.dark_potential) * self.potential_scale * self.retina.imageBGR[self.pixel[1], self.pixel[0]], 0, 255))  # deviation from dark potential
     #self.pixelValue = np.uint8(np.clip((self.potential - self.potential_range[0]) * self.potential_scale * self.retina.imageHSV[self.pixel[1], self.pixel[0]], 0, 255))  # potential compared to absolute range
 
 
