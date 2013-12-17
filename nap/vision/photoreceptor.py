@@ -11,19 +11,24 @@ class Photoreceptor(Neuron):
   
   _str_attrs = ['id', 'pixel', 'potential']
   
-  R = 300.0e06  # membrane resistance (~30-700Mohm)
-  C = 3.0e-09  # membrane capacitance (~2-3nF)
-  tau = R * C  # time constant (~100-1000ms)
-  dark_current = 100.0e-12  # convert normalized potential (0..1) to external current I_e (~20-500pA; one study says rods: ~20pA, cones: ~7pA)
-  dark_potential = Neuron.resting_potential.mu + R * dark_current  # -0.04  # mV
+  # Electrophysiological parameters for Integrate-and-Fire phototransduction method (model)
+  R = 300.0e06  # Ohms; membrane resistance (~30-700Mohm)
+  C = 3.0e-09  # Farads; membrane capacitance (~2-3nF)
+  tau = R * C  # seconds; time constant (~100-1000ms)
+  dark_current = 100.0e-12  # Amps; convert normalized potential (0..1) to external current I_e (~100-200pA)
+  dark_potential = Neuron.resting_potential.mu + R * dark_current  # -0.04 mV
+  # NOTE See: Kawai et. al. 2001, Na+ Action Potentials in Human Photoreceptors, Neuron 30-2, pp. 451-458
   
   '''
+  # Electrophysiological parameters for other methods (models)
   potential_decay = 1.0  # per-sec.; rate at which potential decays trying to reach equillibrium
   response_to_potential = -0.07  # normalized response (0..1) to absolute potential (-0.04..-0.07)
   response_resistance = 1.0
   response_to_delta_potential = -0.25  # multiplication factor to convert normalized response value (0..1) to delta cell potential (approx. range: 0.01..0.1; negative because photoreceptors hyperpolarize in response to stimulus) [TODO use non-linear relationship based on current potential to avoid overshoot (and perhaps deltaTime as well?)]
   potential_range = np.float32([action_potential_trough.mu - 3*action_potential_trough.sigma, action_potential_peak])  # [deprecated: photoreceptors don't obey this range]
   '''
+  
+  # Miscellaneous parameters
   potential_scale = 1.0 / abs(Neuron.resting_potential.mu - dark_potential)  # factor used to convert cell potential to image pixel value
   
   def __init__(self, location, timeNow, retina, pixel=None):
@@ -154,7 +159,7 @@ class Cone(Photoreceptor):
   """A type of photoreceptor that is sensitive to the frequency (color) of light."""
   
   # NOTE The ratio of different types of cone cells can vary a lot from individual to individual, here we pick a representative distribution; peak response frequencies are also somewhat debatable
-  cone_types = [ PhotoreceptorType('S', Normal(mu=440.0, sigma=20.0), 1.0, 1.0, 1.0, 0.04), PhotoreceptorType('M', Normal(mu=530.0, sigma=25.0), 0.5, 1.0, 1.0, 0.32), PhotoreceptorType('L', Normal(mu=570.0, sigma=30.0), 0.4, 1.0, 1.0, 0.64) ]  # S = blue, M = green, L = red [TODO check values, esp. sensitivity and occurrence]
+  cone_types = [ PhotoreceptorType('S', Normal(mu=440.0, sigma=20.0), 3.0, 1.0, 1.0, 0.04), PhotoreceptorType('M', Normal(mu=530.0, sigma=25.0), 2.5, 1.0, 1.0, 0.32), PhotoreceptorType('L', Normal(mu=570.0, sigma=30.0), 2.0, 1.0, 1.0, 0.64) ]  # S = blue, M = green, L = red [TODO check values, esp. sensitivity and occurrence]
   cone_probabilities = np.float32([cone_type.occurrence for cone_type in cone_types])  # occurrence probabilities [TODO normalize so that they sum to 1?]
   
   def __init__(self, location, timeNow, retina=None, pixel=None, coneType=None):
