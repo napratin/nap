@@ -2,7 +2,7 @@
 
 import logging
 from time import time
-from math import exp, pi
+from math import pi, exp, log
 import random
 from collections import namedtuple, deque
 import numpy as np
@@ -10,6 +10,8 @@ import cv2
 
 from matplotlib.pyplot import figure, plot, axis, show, subplots_adjust
 from mpl_toolkits.mplot3d import Axes3D
+
+from .util.quadtree import Rect, QuadTree
 
 # Different neuron distributions
 Normal = namedtuple('Normal', ['mu', 'sigma'])  # a normal distribution, defined by mean (mu) and std. dev. (sigma)
@@ -67,6 +69,11 @@ class GrowthCone:
       perp_limit = projection * self.spreadFactor
       return (perp_limit - perp_distance) / perp_limit if perp_distance < perp_limit else 0.0
   
+  def getTerminationRect(self, anchor):
+    """Given an anchor, return the approximate region of termination as a rectangle."""
+    radius = self.maxLength * self.spreadFactor
+    return Rect(anchor[0] - radius, anchor[1] - radius, anchor[0] + radius, anchor[1] + radius)
+  
   def __str__(self):
     return "GrowthCone: {{ direction: {}, maxLength: {}, spreadFactor: {} }}".format(self.direction, self.maxLength, self.spreadFactor)
 
@@ -91,6 +98,16 @@ class Synapse:
     
     if not self.isInhibited:
       self.post.accumulate(self.strength)
+  
+  def transmitGradedPotential(self, timeNow):
+    if self.isInhibited and self.uninhibitAt <= timeNow:
+      self.isInhibited = False
+    #print "Synapse.transmitGradedPotential(): timeNow = {}, self.uninhibitAt = {} [{}]".format(timeNow, self.uninhibitAt, "INHIBITED" if self.isInhibited else "UNINHIBITED")
+    
+    if not self.isInhibited:
+      #self.post.accumulate((self.pre.potential - self.pre.resting_potential.mu))
+      self.post.accumulate((self.pre.potential - self.pre.resting_potential.mu) * self.strength)
+      # TODO Figure out how to quantize graded potential transmission
   
   def inhibit(self, timeNow, duration=synapse_inhibition_period):
     #print "Synapse.inhibit(): timeNow = {}, duration = {}".format(timeNow, duration)
@@ -196,13 +213,19 @@ class Neuron:
   actionPotential = actionPotential_approximate  # pick _accurate for more realistic action potential dynamics
   
   def fireActionPotential(self):
-    # Transmit action potential to neighbor neurons through axon (TODO introduce transmission delay?)
+    # Fire action potential to neighbor neurons through axon (TODO introduce transmission delay?)
     #print "Neuron.fireActionPotential() [{}]".format(self.id)  # [debug]
     for synapse in self.synapses:
       synapse.transmitActionPotential(self.timeCurrent)
-      
+    
     for synapse in self.gatedSynapses:
       synapse.inhibit(self.timeCurrent)
+  
+  def sendGradedPotential(self):
+    # Send graded potential to neighbor neurons through axon
+    #print "Neuron.sendGradedPotential() [{}]".format(self.id)  # [debug]
+    for synapse in self.synapses:
+      synapse.transmitGradedPotential(self.timeCurrent)
   
   def plot(self):
     plot((self.timeLastPlotted, self.timeCurrent), (self.potentialLastPlotted, self.potential), self.plotColor)  # [graph]
@@ -228,6 +251,8 @@ class NeuronGroup:
     self.logger = logging.getLogger(__name__)
     self.logger.info("Creating {}".format(self))
     self.logger.debug("Bounds: x: {}, y: {}, z: {}".format(self.bounds[:,0], self.bounds[:,1], self.bounds[:,2]))
+    
+    # * Designate neuron locations
     self.neuronLocations = []
     if isinstance(self.distribution, MultivariateNormal):
       #self.logger.debug("Distribution: mu: {}, cov: {}".format(self.distribution.mu, self.distribution.cov))  # ugly
@@ -256,13 +281,17 @@ class NeuronGroup:
     #print "Out-of-bounds neuron locations:", [loc for loc in self.neuronLocations if not ((self.bounds[0, 0] <= loc[0] <= self.bounds[1, 0]) and (self.bounds[0, 1] <= loc[1] <= self.bounds[1, 1]))]  # [debug]
     
     #print "Neuron locations:\n", self.neuronLocations  # [debug]
-  
+    
+    # * Create neurons
     self.neurons = self.numNeurons * [None]
-    # TODO Build spatial index using oct-tree
     self.neuronPlotColors = self.numNeurons * [None]
     for i in xrange(self.numNeurons):
       self.neurons[i] = random.choice(self.neuronTypes)(self.neuronLocations[i], self.timeNow, **kwargs)
       self.neuronPlotColors[i] = self.neurons[i].plotColor
+    
+    # * Build spatial index using quadtree (assuming neurons are roughly in a layer)
+    boundingRect = Rect(self.bounds[0, 0], self.bounds[0, 1], self.bounds[1, 0], self.bounds[1, 1])
+    self.qtree = QuadTree(self.neurons, depth=int(log(self.numNeurons, 2)))
   
   def connectWith(self, group, maxConnectionsPerNeuron, growthCone):
     self.growthCone = growthCone  # cache for possible display
@@ -271,9 +300,12 @@ class NeuronGroup:
     
     # * For each neuron in this group
     for a in self.neurons:
+      # ** Compute search rectangle in target group to select candidate neurons
+      rect = growthCone.getTerminationRect(a.location)
+      
       # ** Find candidate neurons from the other group
       candidates = []
-      for b in group.neurons:  # TODO: Sample/optimize
+      for b in group.qtree.hit(rect):  # optimized spatial range query
         growthConeScore = growthCone.score(a.location, b.location)
         if growthConeScore > 0.1:
           candidates.append((growthConeScore, b))

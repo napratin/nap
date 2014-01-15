@@ -4,6 +4,8 @@ import logging
 from math import sqrt
 import random
 import itertools
+import argparse
+import inspect
 from unittest import TestCase
 import numpy as np
 import cv2
@@ -15,6 +17,7 @@ from lumos.input import InputDevice, run
 from matplotlib.pyplot import figure, show, hold, pause
 from matplotlib.colors import hsv_to_rgb
 
+from ..util.quadtree import Rect
 from ..neuron import Neuron, NeuronGroup, GrowthCone, MultivariateNormal, SymmetricLogNormal, plotNeuronGroups
 from .photoreceptor import Rod, Cone
 from .bipolar import BipolarCell
@@ -64,6 +67,7 @@ class Retina:
     # ** Output image
     if self.context.options.gui:
       self.imageOut = np.zeros((self.imageSize[1], self.imageSize[0], 3), dtype=np.uint8)
+      self.imageBipolar = np.zeros((self.imageSize[1], self.imageSize[0], 1), dtype=np.uint8)
     
     # * Create neuron groups
     # ** Photoreceptors
@@ -72,13 +76,13 @@ class Retina:
     self.coneTypeNames = [coneType.name for coneType in Cone.cone_types]  # mainly for plotting
     
     # ** Bipolar cells
-    self.bipolarCells = NeuronGroup(numNeurons=self.num_bipolar_cells, timeNow=self.timeNow, neuronTypes=[BipolarCell], bounds=self.bounds, distribution=self.bipolarCellDistribution)
+    self.bipolarCells = NeuronGroup(numNeurons=self.num_bipolar_cells, timeNow=self.timeNow, neuronTypes=[BipolarCell], bounds=self.bounds, distribution=self.bipolarCellDistribution, retina=self)
     
     # * Connect neuron groups
     growthConeDirection = self.bipolarCells.distribution.mu - self.cones.distribution.mu  # NOTE only using cone distribution center
     growthConeDirection /= np.linalg.norm(growthConeDirection, ord=2)  # need a unit vector
-    #self.cones.connectWith(self.bipolarCells, maxConnectionsPerNeuron=10, growthCone=GrowthCone(growthConeDirection, spreadFactor=1))
-    #self.rods.connectWith(self.bipolarCells, maxConnectionsPerNeuron=25, growthCone=GrowthCone(growthConeDirection, spreadFactor=1))
+    self.cones.connectWith(self.bipolarCells, maxConnectionsPerNeuron=10, growthCone=GrowthCone(growthConeDirection, spreadFactor=1))
+    self.rods.connectWith(self.bipolarCells, maxConnectionsPerNeuron=25, growthCone=GrowthCone(growthConeDirection, spreadFactor=1))
     # TODO Connection currently takes a long time; speed this up with better parameterization and spatial search
   
   def update(self, timeNow):
@@ -103,6 +107,12 @@ class Retina:
       photoreceptor.updateWithP(self.timeNow)  # update probabilistically
       if self.context.options.gui:
         self.imageOut[photoreceptor.pixel[1], photoreceptor.pixel[0], :] = photoreceptor.pixelValue  # render
+    
+    for bipolarCell in self.bipolarCells.neurons:
+      bipolarCell.update(self.timeNow)  # update every iteration
+      #bipolarCell.updateWithP(self.timeNow)  # update probabilistically
+      if self.context.options.gui:
+        self.imageBipolar[bipolarCell.pixel[1], bipolarCell.pixel[0]] = bipolarCell.pixelValue  # render
   
   def plotPhotoreceptors3D(self):
     plotNeuronGroups([self.rods, self.cones, self.bipolarCells], groupColors=[self.rodPlotColor, self.conePlotColor, self.bipolarCellPlotColor], showConnections=True, equalScaleZ=True)
@@ -215,6 +225,7 @@ class Projector(FrameProcessor):
     self.retina.imageBGR[:] = self.screen[self.focusRect[2]:self.focusRect[3], self.focusRect[0]:self.focusRect[1]]
     #if self.context.options.gui: cv2.imshow("Retina", self.retina.imageBGR)  # [debug]
     self.retina.update(timeNow)
+    if self.context.options.gui: cv2.imshow("Bipolar cells", self.retina.imageBipolar)
     return True, self.retina.imageOut
   
   def onKeyPress(self, key, keyChar=None):
@@ -299,6 +310,7 @@ class TestRetina(TestCase):
           self.testRod.plot()
           pause(0.01)
         print "{}\t{}\t{}\t{}\t{}\t{}".format(timeNow, self.testRod.response, self.testRod.potential, self.testRod.I_e, self.testRod.expDecayFactor, self.testRod.pixelValue)  # [debug, non-GUI]
+        #print "{}\t{}\t{}\t{}".format(timeNow, self.testRod.potential, self.testRod.expDecayFactor, self.testRod.pixelValue)  # [debug, non-GUI, for BipolarCells]
         #cv2.circle(imageOut, (self.testRod.pixel[0], self.testRod.pixel[1]), 3, np.uint8([255, 0, 255]))
         imageOut[self.testRod.pixel[1], self.testRod.pixel[0]] = np.uint8([255, 0, 255])
         return keepRunning, imageOut
@@ -321,10 +333,16 @@ class TestRetina(TestCase):
 
 
 if __name__ == "__main__":
-  runner = TestRetina('test_rod_potential').run
-  context = Context.createInstance()
-  if context.options.debug:
-    import pdb
-    pdb.runcall(runner)
-  else:
-    runner()
+  argParser = argparse.ArgumentParser(add_help=False)
+  argParser.add_argument('--test', default="test_projector", help="test case to run (a test_ method in TestRetina)")
+  context = Context.createInstance(parent_argparsers=[argParser])
+  try:
+    runner = TestRetina(context.options.test).run
+    if context.options.debug:
+      import pdb
+      pdb.runcall(runner)
+    else:
+      runner()
+  except ValueError as e:
+    print "Invalid test: {}".format(e)
+    print "Pick from: {}".format(", ".join(name for name, method in inspect.getmembers(TestRetina, predicate=inspect.ismethod) if name.startswith("test_")))

@@ -153,6 +153,8 @@ class Rod(Photoreceptor):
     Photoreceptor.updatePotential(self)
     self.pixelValue = int(np.clip(abs(self.potential - self.dark_potential) * self.potential_scale * self.retina.imageHSV[self.pixel[1], self.pixel[0]][2], 0, 255))  # deviation from dark potential
     #self.pixelValue = int(np.clip((self.potential - self.potential_range[0]) * self.potential_scale * self.retina.imageHSV[self.pixel[1], self.pixel[0]][2], 0, 255))  # potential compared to absolute range
+    
+    self.sendGradedPotential()
 
 
 class Cone(Photoreceptor):
@@ -178,6 +180,8 @@ class Cone(Photoreceptor):
     Photoreceptor.updatePotential(self)
     self.pixelValue = np.uint8(np.clip(abs(self.potential - self.dark_potential) * self.potential_scale * self.retina.imageBGR[self.pixel[1], self.pixel[0]], 0, 255))  # deviation from dark potential
     #self.pixelValue = np.uint8(np.clip((self.potential - self.potential_range[0]) * self.potential_scale * self.retina.imageHSV[self.pixel[1], self.pixel[0]], 0, 255))  # potential compared to absolute range
+    
+    self.sendGradedPotential()
 
 
 if __name__ == "__main__":
