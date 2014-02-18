@@ -64,10 +64,12 @@ class Retina:
     self.imagesCone['M'] = np.zeros((self.imageSize[1], self.imageSize[0], 1), dtype=np.float32)
     self.imagesCone['L'] = np.zeros((self.imageSize[1], self.imageSize[0], 1), dtype=np.float32)
     
-    # ** Output image
+    # ** Output image(s)
     if self.context.options.gui:
       self.imageOut = np.zeros((self.imageSize[1], self.imageSize[0], 3), dtype=np.uint8)
-      self.imageBipolar = np.zeros((self.imageSize[1], self.imageSize[0], 1), dtype=np.uint8)
+      self.imagesBipolar = dict()
+      self.imagesBipolar['ON'] = np.zeros((self.imageSize[1], self.imageSize[0], 1), dtype=np.uint8)
+      self.imagesBipolar['OFF'] = np.zeros((self.imageSize[1], self.imageSize[0], 1), dtype=np.uint8)
     
     # * Create neuron groups
     # ** Photoreceptors
@@ -103,6 +105,7 @@ class Retina:
       cv2.imshow("S-cone response", self.imagesCone['S'])
       cv2.imshow("M-cone response", self.imagesCone['M'])
       cv2.imshow("L-cone response", self.imagesCone['L'])
+    
     for photoreceptor in itertools.chain(self.rods.neurons, self.cones.neurons):
       photoreceptor.updateWithP(self.timeNow)  # update probabilistically
       if self.context.options.gui:
@@ -112,7 +115,11 @@ class Retina:
       bipolarCell.update(self.timeNow)  # update every iteration
       #bipolarCell.updateWithP(self.timeNow)  # update probabilistically
       if self.context.options.gui:
-        self.imageBipolar[bipolarCell.pixel[1], bipolarCell.pixel[0]] = bipolarCell.pixelValue  # render
+        self.imagesBipolar[bipolarCell.bipolarType.name][bipolarCell.pixel[1], bipolarCell.pixel[0]] = bipolarCell.pixelValue  # render
+    
+    if self.context.options.gui:
+      cv2.imshow("ON Bipolar cells", self.imagesBipolar['ON'])
+      cv2.imshow("OFF Bipolar cells", self.imagesBipolar['OFF'])
   
   def plotPhotoreceptors3D(self):
     plotNeuronGroups([self.rods, self.cones, self.bipolarCells], groupColors=[self.rodPlotColor, self.conePlotColor, self.bipolarCellPlotColor], showConnections=True, equalScaleZ=True)
@@ -225,7 +232,6 @@ class Projector(FrameProcessor):
     self.retina.imageBGR[:] = self.screen[self.focusRect[2]:self.focusRect[3], self.focusRect[0]:self.focusRect[1]]
     #if self.context.options.gui: cv2.imshow("Retina", self.retina.imageBGR)  # [debug]
     self.retina.update(timeNow)
-    if self.context.options.gui: cv2.imshow("Bipolar cells", self.retina.imageBipolar)
     return True, self.retina.imageOut
   
   def onKeyPress(self, key, keyChar=None):
