@@ -3,6 +3,7 @@
 import logging
 import numpy as np
 import cv2
+import cv2.cv as cv
 
 from lumos.context import Context
 from lumos.input import InputDevice, run
@@ -25,29 +26,13 @@ class Retina:
     self.logger = logging.getLogger(__name__)
     self.logger.info("Creating simplified Retina")
     self.imageSize = imageSize
+    self.imageCenter = (self.imageSize[1] / 2, self.imageSize[0] / 2)
     self.timeNow = timeNow
     self.bounds = np.float32([[0.0, 0.0, 2.0], [self.imageSize[0] - 1, self.imageSize[1] - 1, 4.0]])
     self.center = (self.bounds[0] + self.bounds[1]) / 2
     self.logger.debug("Retina center: {}, image size: {}".format(self.center, self.imageSize))
     
     self.bipolarBlurSize = (5, 5)  # size of blurring kernel used when computing Bipolar cell response
-    self.ganglionBlurSize = (11, 11)  # size of blurring kernel used when computing Ganglion cell response
-    self.ganglionCenterKernel = np.float32(
-      [ [ 1, 1, 1 ],
-        [ 1, 1, 1 ],
-        [ 1, 1, 1 ] ])
-    self.ganglionCenterKernel /= np.sum(self.ganglionCenterKernel)  # normalize
-    self.logger.info("Ganglion center kernel:\n{}".format(self.ganglionCenterKernel))  # [debug]
-    self.ganglionSurroundKernel = np.float32(
-      [ [ 1, 1, 1, 1, 1, 1, 1 ],
-        [ 1, 1, 1, 1, 1, 1, 1 ],
-        [ 1, 1, 0, 0, 0, 1, 1 ],
-        [ 1, 1, 0, 0, 0, 1, 1 ],
-        [ 1, 1, 0, 0, 0, 1, 1 ],
-        [ 1, 1, 1, 1, 1, 1, 1 ],
-        [ 1, 1, 1, 1, 1, 1, 1 ] ])
-    self.ganglionSurroundKernel /= np.sum(self.ganglionSurroundKernel)  # normalize
-    self.logger.info("Ganglion surround kernel:\n{}".format(self.ganglionSurroundKernel))  # [debug]
     self.ganglionCenterSurroundKernel = np.float32(
       [ [ -1, -1, -1, -1, -1, -1, -1 ],
         [ -1, -1, -1, -1, -1, -1, -1 ],
@@ -105,6 +90,31 @@ class Retina:
     self.imagesGanglion['BR'] = np.zeros((self.imageSize[1], self.imageSize[0]), dtype=np.float32)
     self.imagesGanglion['BY'] = np.zeros((self.imageSize[1], self.imageSize[0]), dtype=np.float32)
     self.imagesGanglion['YB'] = np.zeros((self.imageSize[1], self.imageSize[0]), dtype=np.float32)
+    
+    # ** Combined response (salience) image and spatial attention map
+    self.imageSalience = np.zeros((self.imageSize[1], self.imageSize[0]), dtype=np.float32)
+    self.imageAttention = np.zeros((self.imageSize[1], self.imageSize[0]), dtype=np.float32)
+    # *** Create a central (covert) attention spotlight
+    cv2.circle(self.imageAttention, (self.imageSize[1] / 2, self.imageSize[0] / 2), self.imageSize[0] / 3, 1.0, cv.CV_FILLED)
+    self.imageAttention = cv2.blur(self.imageAttention, (self.imageSize[0] / 4, self.imageSize[0] / 4))  # coarse blur
+    
+    # ** Simple components to compute spatial location (NOTE ideally, imageSize[0] == imageSize[1])
+    self.spatialLocatorCenters = dict(
+      tl=np.int_([self.imageSize[1] / 3, self.imageSize[0] / 3]),
+      tr=np.int_([self.imageSize[1] * 2 / 3, self.imageSize[0] / 3]),
+      bl=np.int_([self.imageSize[1] / 3, self.imageSize[0] * 2 / 3]),
+      br=np.int_([self.imageSize[1] * 2 / 3, self.imageSize[0] * 2 / 3]))
+    self.spatialLocatorRadius = self.imageSize[0] / 3
+    self.spatialLocatorArea = (self.spatialLocatorRadius * 2) ^ 2
+    self.spatialLocatorSlices = dict()
+    for name, center in self.spatialLocatorCenters.iteritems():
+      self.spatialLocatorSlices[name] = np.index_exp[
+        max(center[1] - self.spatialLocatorRadius, 0):min(center[1] + self.spatialLocatorRadius, self.imageSize[1]),
+        max(center[0] - self.spatialLocatorRadius, 0):min(center[0] + self.spatialLocatorRadius, self.imageSize[0])]
+      self.logger.info("Spatial locator slice - {} @ {}: {}".format(name, center, self.spatialLocatorSlices[name]))  # [debug]
+    self.imageSpatialLocatorMap = np.zeros((self.spatialLocatorRadius * 2, self.spatialLocatorRadius * 2), dtype=np.float32)
+    cv2.circle(self.imageSpatialLocatorMap, (self.spatialLocatorRadius, self.spatialLocatorRadius), self.spatialLocatorRadius, 1.0, cv.CV_FILLED)
+    self.imageSpatialLocatorMap = cv2.blur(self.imageSpatialLocatorMap, (self.spatialLocatorRadius / 2, self.spatialLocatorRadius / 2))  # coarse blur
     
     # ** Output image(s)
     if self.context.options.gui:
@@ -166,18 +176,38 @@ class Retina:
       self.imagesGanglion['BY'] = np.maximum(self.imagesGanglion['BY'], np.clip(cv2.filter2D(imageBY, -1, k), 0.0, 1.0))
       self.imagesGanglion['YB'] = np.maximum(self.imagesGanglion['YB'], np.clip(cv2.filter2D(-imageBY, -1, k), 0.0, 1.0))
     
-    # * Compute a representative output image
-    
-    #self.imageOut = np.maximum(self.imagesGanglion['ON'], self.imagesGanglion['OFF'])  # max of ON- and OFF- Ganglion cells
-    
-    # Max of all Ganglion cell images
-    self.imageOut = self.imagesGanglion['ON']
+    # * Compute combined (salience) image; TODO incorporate attention weighting (spatial, as well as by visual feature)
+    # ** Method 1: Max of all Ganglion cell images
+    self.imageSalience.fill(0.0)
     for ganglionType, ganglionImage in self.imagesGanglion.iteritems():
-      self.imageOut = np.maximum(self.imageOut, ganglionImage)
+      self.imageSalience = np.maximum(self.imageSalience, ganglionImage)
     
-    #_, self.imageOut = cv2.threshold(self.imagesGanglion['ON'], 0.15, 1.0, cv2.THRESH_TOZERO)  # threshold ON- Ganglion cells only
+    #self.imageSalience *= self.imageAttention  # TODO evaluate if this is necessary
     
-    # TODO Find Ganglion cell image that contains most salient region, incorporate attention (spatial, as well as by visual feature)
+    # * TODO Compute feature vector of attended region
+    
+    # ** Spatial features computed by *neurons* connected to specific regions of the visual field, agnostic to types of features
+    # TODO Switch from sparse regularly placed spatial locators to randomly placed multiscale spatial locators
+    avgResponse = np.sum(self.imageSalience) / self.imageSalience.size
+    self.logger.info("Avg. response: {:.2f}".format(avgResponse))  # [debug]
+    spatialLocation = np.float32([0.0, 0.0])
+    totalResponse = 0.0
+    for name, slice in self.spatialLocatorSlices.iteritems():
+      response = (np.sum(self.imageSalience[slice] * self.imageSpatialLocatorMap) / self.spatialLocatorArea) - avgResponse
+      self.logger.info("Spatial locator response: {} = {:.2f}".format(name, response))  # [debug]
+      spatialLocation += response * self.spatialLocatorCenters[name]
+      totalResponse += response
+    spatialLocation /= totalResponse
+    spatialSize = totalResponse / len(self.spatialLocatorSlices)
+    self.logger.info("Spatial location: {}, size estimate: {}".format(spatialLocation, spatialSize))  # [debug]
+    
+    # * Designate a representative output image
+    self.imageOut = self.imageSalience
+    #_, self.imageOut = cv2.threshold(self.imageOut, 0.15, 1.0, cv2.THRESH_TOZERO)  # apply threshold to remove low-response regions
+    
+    # * Mark any overlays on output image
+    if spatialSize >= 60:  # TODO clean up arbitrary constant
+      cv2.line(self.imageOut, self.imageCenter, (int(spatialLocation[0]), int(spatialLocation[1])), 1.0, 2)
     
     if self.context.options.gui:
       #cv2.imshow("Hue", self.imageH)
