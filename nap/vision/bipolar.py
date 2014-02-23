@@ -3,6 +3,7 @@
 from math import exp
 from collections import namedtuple
 import numpy as np
+
 from ..neuron import Neuron
 
 # Simple structure to define ON- and OFF- Bipolar cell types (polarity = -1 means depolarizing/inhibitory/ON, and vice-versa)

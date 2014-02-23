@@ -14,17 +14,13 @@ from ..retina import Projector
 class Retina:
   """A multi-layered surface for hosting different types of neurons that make up a retina, simplified version."""
   
-  num_rods = 10000  # humans: 90-120 million
-  num_cones = 1000  # humans: 4.5-6 million
-  num_bipolar_cells = 2000
-  
   default_image_size = (480, 480)
   
   def __init__(self, imageSize=default_image_size, timeNow=0.0):
     # * Initialize members, parameters
     self.context = Context.getInstance()
     self.logger = logging.getLogger(__name__)
-    self.logger.info("Creating simplified Retina")
+    self.logger.debug("Creating simplified Retina")  # to distinguish from other Retina versions
     self.imageSize = imageSize
     self.imageCenter = (self.imageSize[1] / 2, self.imageSize[0] / 2)
     self.timeNow = timeNow
@@ -42,14 +38,14 @@ class Retina:
         [ -1, -1, -1, -1, -1, -1, -1 ],
         [ -1, -1, -1, -1, -1, -1, -1 ] ])
     self.ganglionCenterSurroundKernel /= np.sum(self.ganglionCenterSurroundKernel)  # normalize
-    self.logger.info("Ganglion center-surround kernel:\n{}".format(self.ganglionCenterSurroundKernel))  # [debug]
+    #self.logger.info("Ganglion center-surround kernel:\n{}".format(self.ganglionCenterSurroundKernel))  # [debug]
     self.ganglionKernelLevels = 4
     self.ganglionKernels = [None] * self.ganglionKernelLevels
     self.ganglionKernels[0] = self.ganglionCenterSurroundKernel
     for i in xrange(1, self.ganglionKernelLevels):
       self.ganglionKernels[i] = cv2.resize(self.ganglionKernels[i - 1], dsize=None, fx=2, fy=2)
       self.ganglionKernels[i] /= np.sum(self.ganglionKernels[i])  # normalize
-    self.logger.info("Ganglion center-surround kernel sizes ({} levels): {}".format(self.ganglionKernelLevels, ", ".join("{}".format(k.shape) for k in self.ganglionKernels)))  # [debug]
+    #self.logger.info("Ganglion center-surround kernel sizes ({} levels): {}".format(self.ganglionKernelLevels, ", ".join("{}".format(k.shape) for k in self.ganglionKernels)))  # [debug]
     
     # * Image and related members
     # ** RGB and HSV images
@@ -83,7 +79,7 @@ class Retina:
     self.imagesGanglion = dict()
     self.imagesGanglion['ON'] = np.zeros((self.imageSize[1], self.imageSize[0]), dtype=np.float32)
     self.imagesGanglion['OFF'] = np.zeros((self.imageSize[1], self.imageSize[0]), dtype=np.float32)
-    # TODO Verify why image shapes (h, w, 1) and (h, w) are not compatible
+    # TODO Verify why image shapes (h, w, 1) and (h, w) are not compatible (use keepdims=True for numpy operations)
     self.imagesGanglion['RG'] = np.zeros((self.imageSize[1], self.imageSize[0]), dtype=np.float32)
     self.imagesGanglion['GR'] = np.zeros((self.imageSize[1], self.imageSize[0]), dtype=np.float32)
     self.imagesGanglion['RB'] = np.zeros((self.imageSize[1], self.imageSize[0]), dtype=np.float32)
@@ -91,30 +87,13 @@ class Retina:
     self.imagesGanglion['BY'] = np.zeros((self.imageSize[1], self.imageSize[0]), dtype=np.float32)
     self.imagesGanglion['YB'] = np.zeros((self.imageSize[1], self.imageSize[0]), dtype=np.float32)
     
-    # ** Combined response (salience) image and spatial attention map
+    # ** Combined response (salience) image
     self.imageSalience = np.zeros((self.imageSize[1], self.imageSize[0]), dtype=np.float32)
+    
+    # ** Spatial attention map with a central (covert) spotlight (currently unused; TODO move to VisualCortex?)
     self.imageAttention = np.zeros((self.imageSize[1], self.imageSize[0]), dtype=np.float32)
-    # *** Create a central (covert) attention spotlight
     cv2.circle(self.imageAttention, (self.imageSize[1] / 2, self.imageSize[0] / 2), self.imageSize[0] / 3, 1.0, cv.CV_FILLED)
     self.imageAttention = cv2.blur(self.imageAttention, (self.imageSize[0] / 4, self.imageSize[0] / 4))  # coarse blur
-    
-    # ** Simple components to compute spatial location (NOTE ideally, imageSize[0] == imageSize[1])
-    self.spatialLocatorCenters = dict(
-      tl=np.int_([self.imageSize[1] / 3, self.imageSize[0] / 3]),
-      tr=np.int_([self.imageSize[1] * 2 / 3, self.imageSize[0] / 3]),
-      bl=np.int_([self.imageSize[1] / 3, self.imageSize[0] * 2 / 3]),
-      br=np.int_([self.imageSize[1] * 2 / 3, self.imageSize[0] * 2 / 3]))
-    self.spatialLocatorRadius = self.imageSize[0] / 3
-    self.spatialLocatorArea = (self.spatialLocatorRadius * 2) ^ 2
-    self.spatialLocatorSlices = dict()
-    for name, center in self.spatialLocatorCenters.iteritems():
-      self.spatialLocatorSlices[name] = np.index_exp[
-        max(center[1] - self.spatialLocatorRadius, 0):min(center[1] + self.spatialLocatorRadius, self.imageSize[1]),
-        max(center[0] - self.spatialLocatorRadius, 0):min(center[0] + self.spatialLocatorRadius, self.imageSize[0])]
-      self.logger.info("Spatial locator slice - {} @ {}: {}".format(name, center, self.spatialLocatorSlices[name]))  # [debug]
-    self.imageSpatialLocatorMap = np.zeros((self.spatialLocatorRadius * 2, self.spatialLocatorRadius * 2), dtype=np.float32)
-    cv2.circle(self.imageSpatialLocatorMap, (self.spatialLocatorRadius, self.spatialLocatorRadius), self.spatialLocatorRadius, 1.0, cv.CV_FILLED)
-    self.imageSpatialLocatorMap = cv2.blur(self.imageSpatialLocatorMap, (self.spatialLocatorRadius / 2, self.spatialLocatorRadius / 2))  # coarse blur
     
     # ** Output image(s)
     if self.context.options.gui:
@@ -186,29 +165,7 @@ class Retina:
     
     # * TODO Compute feature vector of attended region
     
-    # ** Spatial features computed by *neurons* connected to specific regions of the visual field, agnostic to types of features
-    # TODO Switch from sparse regularly placed spatial locators to randomly placed multiscale spatial locators
-    avgResponse = np.sum(self.imageSalience) / self.imageSalience.size
-    self.logger.info("Avg. response: {:.2f}".format(avgResponse))  # [debug]
-    spatialLocation = np.float32([0.0, 0.0])
-    totalResponse = 0.0
-    for name, slice in self.spatialLocatorSlices.iteritems():
-      response = (np.sum(self.imageSalience[slice] * self.imageSpatialLocatorMap) / self.spatialLocatorArea) - avgResponse
-      self.logger.info("Spatial locator response: {} = {:.2f}".format(name, response))  # [debug]
-      spatialLocation += response * self.spatialLocatorCenters[name]
-      totalResponse += response
-    spatialLocation /= totalResponse
-    spatialSize = totalResponse / len(self.spatialLocatorSlices)
-    self.logger.info("Spatial location: {}, size estimate: {}".format(spatialLocation, spatialSize))  # [debug]
-    
-    # * Designate a representative output image
-    self.imageOut = self.imageSalience
-    #_, self.imageOut = cv2.threshold(self.imageOut, 0.15, 1.0, cv2.THRESH_TOZERO)  # apply threshold to remove low-response regions
-    
-    # * Mark any overlays on output image
-    if spatialSize >= 60:  # TODO clean up arbitrary constant
-      cv2.line(self.imageOut, self.imageCenter, (int(spatialLocation[0]), int(spatialLocation[1])), 1.0, 2)
-    
+    # * Show output images if in GUI mode
     if self.context.options.gui:
       #cv2.imshow("Hue", self.imageH)
       #cv2.imshow("Saturation", self.imageS)
@@ -223,6 +180,11 @@ class Retina:
       #cv2.imshow("OFF Ganglion cells", self.imagesGanglion['OFF'])
       for ganglionType, ganglionImage in self.imagesGanglion.iteritems():
         cv2.imshow("{} Ganglion cells".format(ganglionType), ganglionImage)
+      cv2.imshow("Salience", self.imageSalience)
+      
+      # Designate a representative output image
+      self.imageOut = self.imageSalience
+      #_, self.imageOut = cv2.threshold(self.imageOut, 0.15, 1.0, cv2.THRESH_TOZERO)  # apply threshold to remove low-response regions
 
 
 class SimplifiedProjector(Projector):

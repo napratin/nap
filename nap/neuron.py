@@ -14,6 +14,8 @@ from mpl_toolkits.mplot3d import Axes3D
 from .util.quadtree import Rect, QuadTree
 
 # Different neuron distributions
+Uniform = namedtuple('Uniform', ['low', 'high'])  # a uniform distribution over the half-open interval [low, high)
+MultivariateUniform = namedtuple('MultivariateUniform', ['lows', 'highs'])  # a uniform distribution in multiple dimensions
 Normal = namedtuple('Normal', ['mu', 'sigma'])  # a normal distribution, defined by mean (mu) and std. dev. (sigma)
 MultivariateNormal = namedtuple('MultivariateNormal', ['mu', 'cov'])  # a multivariate normal distribution, defined by mean vector (mu) of length N and covariance matrix (cov) of size NxN
 SymmetricNormal = namedtuple('SymmetricNormal', Normal._fields + ('center',))
@@ -254,7 +256,14 @@ class NeuronGroup:
     
     # * Designate neuron locations
     self.neuronLocations = []
-    if isinstance(self.distribution, MultivariateNormal):
+    if isinstance(self.distribution, MultivariateUniform):
+      # NOTE self.distribution has to be a 3-dimensional MultivariateUniform, even if the third dimension is a constant (low=high)
+      self.neuronLocations = np.column_stack([
+        np.random.uniform(self.distribution.lows[0], self.distribution.highs[0], self.numNeurons),
+        np.random.uniform(self.distribution.lows[1], self.distribution.highs[1], self.numNeurons),
+        np.random.uniform(self.distribution.lows[2], self.distribution.highs[2], self.numNeurons)])
+      #self.logger.debug("MultivariateUniform array shape: {}".format(self.neuronLocations.shape))
+    elif isinstance(self.distribution, MultivariateNormal):
       #self.logger.debug("Distribution: mu: {}, cov: {}".format(self.distribution.mu, self.distribution.cov))  # ugly
       self.neuronLocations = np.random.multivariate_normal(self.distribution.mu, self.distribution.cov, self.numNeurons)
     elif isinstance(self.distribution, SymmetricNormal):
@@ -263,14 +272,20 @@ class NeuronGroup:
       xLocs, yLocs = cv2.polarToCart(rads, thetas)
       zLocs = np.repeat(np.float32([self.distribution.center[2]]), self.numNeurons).reshape((self.numNeurons, 1))  # constant z, repeated as a column vector
       #self.logger.debug("SymmetricNormal array shapes:- x: {}, y: {}, z: {}".format(xLocs.shape, yLocs.shape, zLocs.shape))
-      self.neuronLocations = np.hstack([self.distribution.center[0] + xLocs, self.distribution.center[1] + yLocs, zLocs])  # build Nx3 numpy array
+      self.neuronLocations = np.column_stack([
+        self.distribution.center[0] + xLocs,
+        self.distribution.center[1] + yLocs,
+        zLocs])  # build Nx3 numpy array
     elif isinstance(self.distribution, SymmetricLogNormal):
       thetas = np.random.uniform(pi, -pi, self.numNeurons)  # symmetric in any direction around Z axis
       rads = np.random.lognormal(self.distribution.mu, self.distribution.sigma, self.numNeurons)  # varies radially
       xLocs, yLocs = cv2.polarToCart(rads, thetas)
       zLocs = np.repeat(np.float32([self.distribution.center[2]]), self.numNeurons).reshape((self.numNeurons, 1))  # constant z, repeated as a column vector
-      #self.logger.debug("SymmetricNormal array shapes:- x: {}, y: {}, z: {}".format(xLocs.shape, yLocs.shape, zLocs.shape))
-      self.neuronLocations = np.hstack([self.distribution.center[0] + xLocs, self.distribution.center[1] + yLocs, zLocs])  # build Nx3 numpy array
+      #self.logger.debug("SymmetricLogNormal array shapes:- x: {}, y: {}, z: {}".format(xLocs.shape, yLocs.shape, zLocs.shape))
+      self.neuronLocations = np.column_stack([
+        self.distribution.center[0] + xLocs,
+        self.distribution.center[1] + yLocs,
+        zLocs])  # build Nx3 numpy array
     else:
       raise ValueError("Unknown distribution type: {}".format(type(self.distribution)))
     # TODO Include (non-central) F distribution (suitable for rods)
@@ -290,8 +305,8 @@ class NeuronGroup:
       self.neuronPlotColors[i] = self.neurons[i].plotColor
     
     # * Build spatial index using quadtree (assuming neurons are roughly in a layer)
-    boundingRect = Rect(self.bounds[0, 0], self.bounds[0, 1], self.bounds[1, 0], self.bounds[1, 1])
-    self.qtree = QuadTree(self.neurons, depth=int(log(self.numNeurons, 2)))
+    boundingRect = (self.bounds[0, 0], self.bounds[0, 1], self.bounds[1, 0], self.bounds[1, 1])
+    self.qtree = QuadTree(self.neurons, depth=int(log(self.numNeurons, 2)), bounding_rect=boundingRect)
   
   def connectWith(self, group, maxConnectionsPerNeuron, growthCone):
     self.growthCone = growthCone  # cache for possible display

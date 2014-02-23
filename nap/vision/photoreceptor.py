@@ -36,6 +36,7 @@ class Photoreceptor(Neuron):
     self.retina = retina
     self.pixel = pixel if pixel is not None else np.int_(location[:2])
     self.expDecayFactor = 0.0
+    self.response = 0.0
     self.I_e = 0.0
   
   def updatePotential(self):

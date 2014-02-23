@@ -231,8 +231,12 @@ class Projector(FrameProcessor):
     #if self.context.options.gui: cv2.imshow("Screen", self.screen)  # [debug]
     self.retina.imageBGR[:] = self.screen[self.focusRect[2]:self.focusRect[3], self.focusRect[0]:self.focusRect[1]]
     #if self.context.options.gui: cv2.imshow("Retina", self.retina.imageBGR)  # [debug]
+    
     self.retina.update(timeNow)
-    return True, self.retina.imageOut
+    
+    if self.context.options.gui:
+      self.imageOut = self.retina.imageOut
+    return True, self.imageOut
   
   def onKeyPress(self, key, keyChar=None):
     if keyChar == 'w':
