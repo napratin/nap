@@ -51,9 +51,9 @@ class BipolarCell(Neuron):
   
   def updatePotential(self):
     # NOTE: Bipolar cells use graded potentials
-    # Differential equation solution, decay only (Method 4, similar to Photoreceptor)
+    # Differential equation solution, decay only (similar to Photoreceptor, Method 4)
     self.expDecayFactor = exp(-self.deltaTime / self.tau)
-    self.potential = self.resting_potential.mu + ((self.potentialLastUpdated - self.resting_potential.mu) * self.expDecayFactor)  # V_m = V_r + (V(t_0) * (e ^ (-(t - t_0) / tau)))
+    self.potential = self.resting_potential.mu + ((self.potentialLastUpdated - self.resting_potential.mu) * self.expDecayFactor)  # V(t) = V_r + ((V(t') - V_r) * (e ^ (-(t - t') / tau)))
     
     # Accumulate/integrate incoming potentials (TODO hyperpolarize/depolarize based on polarity)
     self.potential += self.bipolarType.polarity * self.potentialAccumulated  # integrate signals accumulated from neighbors

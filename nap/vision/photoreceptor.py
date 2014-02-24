@@ -44,25 +44,25 @@ class Photoreceptor(Neuron):
     Phototransduction (NOTE: Photoreceptors use graded potentials; no action potentials)
     
     Neuron model:
-    V_m: membrane potential, V_r: resting potential
+    V: membrane potential, V_r: resting potential
     R: membrane resistance, C: membrane capacitance
-    I_e: external (input) current
+    I_e: external (input) current (NOTE this is for constant stimulus)
     
-    I_R = (V_m - V_r) / R  # resistive (leakage) current across membrane as resistor
-    I_C = C * (dV_m / dt)  # capacitive current across membrane as capacitor
+    I_R = (V - V_r) / R  # resistive (leakage) current across membrane as resistor
+    I_C = C * (dV / dt)  # capacitive current across membrane as capacitor
     I_R + I_C = I_e  # Kirschoff's law of conservation of current [NOTE I_e direction]
     
     Therefore,
     I_C = I_e - I_R
-    C * (dV_m / dt) = I_e - ((V_m - V_r) / R)
+    C * (dV / dt) = I_e - ((V - V_r) / R)
     
-    Solving for V_m,
-    V_m = V_r + V(t_0) * (e ^ (-(t - t_0) / tau))           ...when I_e = 0 (discharging)
-    V_m = V_r + R * I_e * (1 - e ^ (-(t - t_0) / tau))      ...when I_e is non-zero (charging)
-      where t_0 = last time, t = current time, V(t_0) = voltage at time t_0 (relative to V_r), tau = R * C, and t is time elapsed since time 0
+    Solving for V at time t,
+    V(t) = V_r + (V(t') - V_r) * (e ^ (-(t - t') / tau))   ...when I_e = 0 (discharging)
+    V(t) = V_r + R * I_e * (1 - e ^ (-(t - t') / tau))     ...when I_e is non-zero (charging)
+      where t' = last time, t = current time, V(t') = voltage at time t', tau = R * C, and t is time elapsed since time 0
     
     Combining these two states to model simultaneous charging and discharging,
-    V_m = V_r + (V(t_0) * (e ^ (-(t - t_0) / tau))) + (R * I_e * (1 - e ^ (-(t - t_0) / tau)))
+    V(t) = V_r + ((V(t') - V_r) * (e ^ (-(t - t') / tau))) + (R * I_e * (1 - e ^ (-(t - t') / tau)))
     '''
     
     '''
@@ -92,7 +92,7 @@ class Photoreceptor(Neuron):
     # * Method 4: Differential equation solution
     self.expDecayFactor = exp(-self.deltaTime / self.tau)
     self.I_e = self.dark_current * (1.0 - self.response)  # I_e = dark_current when response == 0
-    self.potential = self.resting_potential.mu + ((self.potentialLastUpdated - self.resting_potential.mu) * self.expDecayFactor) + (self.R * self.I_e * (1.0 - self.expDecayFactor))  # V_m = V_r + (V(t_0) * (e ^ (-(t - t_0) / tau))) + (R * I_e * (1 - e ^ (-(t - t_0) / tau)))
+    self.potential = self.resting_potential.mu + ((self.potentialLastUpdated - self.resting_potential.mu) * self.expDecayFactor) + (self.R * self.I_e * (1.0 - self.expDecayFactor))  # V(t) = V_r + ((V(t') - V_r) * (e ^ (-(t - t') / tau))) + (R * I_e * (1 - e ^ (-(t - t') / tau)))
     
     '''
     # * Method 5: Weighted response effect on potential

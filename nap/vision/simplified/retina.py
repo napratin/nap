@@ -90,7 +90,7 @@ class Retina:
     # ** Combined response (salience) image
     self.imageSalience = np.zeros((self.imageSize[1], self.imageSize[0]), dtype=np.float32)
     
-    # ** Spatial attention map with a central (covert) spotlight (currently unused; TODO move to VisualCortex?)
+    # ** Spatial attention map with a central (covert) spotlight (currently unused; TODO move to VisualCortex? also, use np.ogrid?)
     self.imageAttention = np.zeros((self.imageSize[1], self.imageSize[0]), dtype=np.float32)
     cv2.circle(self.imageAttention, (self.imageSize[1] / 2, self.imageSize[0] / 2), self.imageSize[0] / 3, 1.0, cv.CV_FILLED)
     self.imageAttention = cv2.blur(self.imageAttention, (self.imageSize[0] / 4, self.imageSize[0] / 4))  # coarse blur

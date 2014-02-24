@@ -2,7 +2,7 @@
 
 import logging
 from time import time
-from math import pi, exp, log
+from math import pi, exp, log, sqrt
 import random
 from collections import namedtuple, deque
 import numpy as np
@@ -34,6 +34,7 @@ self_depolarization_rate = 0.75  # volts per sec.; rate at which potential rises
 refractory_period = 0.1  # secs.; minimum time between two action potentials (should be an emergent effect when simulating action potential in detail)
 min_update_time = 0.025  # secs.; minimum time between updates
 synapse_inhibition_period = 0.5  # secs.; duration for which the effect of inhibition lasts at a synapse
+neuron_inhibition_period = 1.25  #  secs.; duration for which the effect of inhibition lasts in a neuron
 
 # Graph parameters
 plot_colors = 'bgrcmy'
@@ -88,8 +89,9 @@ class Synapse:
     self.strength = strength if strength is not None else np.random.normal(synaptic_strength.mu, synaptic_strength.sigma)
     self.gatekeeper = gatekeeper  # NOTE do we need to store this here?
     #print "Synapse.__init__(): pre = {}, post = {}, strength = {}, gatekeeper = {}".format(self.pre.id, self.post.id, self.strength, self.gatekeeper.id if self.gatekeeper is not None else None)
-    # TODO implement neuron-level inhibition (?), and learning/boosting of synaptic strength
+    # TODO Implement learning/boosting of synaptic strength
     
+    # Synapse-level inhibition
     self.isInhibited = False
     self.uninhibitAt = -1.0
   
@@ -142,7 +144,12 @@ class Neuron:
     self.p = np.random.uniform(0.0, 0.25)  # update probability: [0, 1] (actually, no need to clip at 1)
     
     self.synapses = list()
+    self.gatedNeurons = list()
     self.gatedSynapses = list()
+    
+    # Neuron-level inhibition
+    self.isInhibited = False
+    self.uninhibitAt = -1.0
     
     self.timeLastPlotted = self.timeCurrent  # [graph]
     self.potentialLastPlotted = self.potential  # [graph]
@@ -153,6 +160,9 @@ class Neuron:
     self.synapses.append(s)
     if gatekeeper is not None:
       gatekeeper.gateSynapse(s)
+  
+  def gateNeuron(self, neuron):
+    self.gatedNeurons.append(neuron)
   
   def gateSynapse(self, synapse):
     self.gatedSynapses.append(synapse)
@@ -165,15 +175,22 @@ class Neuron:
       self.update(timeNow)
   
   def update(self, timeNow):
-    self.timeCurrent = timeNow
-    self.deltaTime = self.timeCurrent - self.timeLastUpdated
-    if self.deltaTime < min_update_time:
-      return
+    if self.isInhibited and self.uninhibitAt <= timeNow:
+      self.isInhibited = False
+      # NOTE potentialAccumulated is not reset here so that it can start responding immediately
     
-    self.updatePotential()
-    self.updateP()
-    self.potentialLastUpdated = self.potential
-    self.timeLastUpdated = self.timeCurrent
+    if self.isInhibited:
+      self.potentialAccumulated = 0.0  # lose any potential gained in this period
+    else:
+      self.timeCurrent = timeNow
+      self.deltaTime = self.timeCurrent - self.timeLastUpdated
+      if self.deltaTime < min_update_time:
+        return
+      
+      self.updatePotential()
+      self.updateP()
+      self.potentialLastUpdated = self.potential
+      self.timeLastUpdated = self.timeCurrent
   
   def updatePotential(self):
     # Fire action potential, if we've reached peak
@@ -220,6 +237,9 @@ class Neuron:
     for synapse in self.synapses:
       synapse.transmitActionPotential(self.timeCurrent)
     
+    for neuron in self.gatedNeurons:
+      neuron.inhibit(self.timeCurrent)
+    
     for synapse in self.gatedSynapses:
       synapse.inhibit(self.timeCurrent)
   
@@ -228,6 +248,13 @@ class Neuron:
     #print "Neuron.sendGradedPotential() [{}]".format(self.id)  # [debug]
     for synapse in self.synapses:
       synapse.transmitGradedPotential(self.timeCurrent)
+  
+  def inhibit(self, timeNow, duration=neuron_inhibition_period):
+    #print "Neuron.inhibit(): timeNow = {}, duration = {}".format(timeNow, duration)
+    self.isInhibited = True
+    self.uninhibitAt = timeNow + duration
+    self.potentialLastUpdated = self.potential = np.random.normal(self.resting_potential.mu, self.resting_potential.sigma)  # reset potential
+    self.timeLastUpdated = timeNow
   
   def plot(self):
     plot((self.timeLastPlotted, self.timeCurrent), (self.potentialLastPlotted, self.potential), self.plotColor)  # [graph]
@@ -247,6 +274,7 @@ class NeuronGroup:
     self.timeNow = timeNow
     self.neuronTypes = neuronTypes
     self.bounds = bounds
+    self.center = (self.bounds[0] + self.bounds[1]) / 2
     self.distribution = distribution
     self.isConnected = False
     
@@ -308,20 +336,29 @@ class NeuronGroup:
     boundingRect = (self.bounds[0, 0], self.bounds[0, 1], self.bounds[1, 0], self.bounds[1, 1])
     self.qtree = QuadTree(self.neurons, depth=int(log(self.numNeurons, 2)), bounding_rect=boundingRect)
   
-  def connectWith(self, group, maxConnectionsPerNeuron, growthCone):
-    self.growthCone = growthCone  # cache for possible display
+  # TODO Move this to Projection
+  def connectWith(self, group, maxConnectionsPerNeuron, growthCone=None, allowSelfConnections=False):
+    if growthCone is not None:
+      self.growthCone = growthCone
+    else:
+      growthConeDirection = group.center - self.center
+      growthConeLength = np.linalg.norm(growthConeDirection, ord=2)
+      growthConeDirection /= growthConeLength  # need a unit vector
+      self.growthCone = GrowthCone(growthConeDirection, maxLength=growthConeLength * 2.0, spreadFactor=1)
+    
     self.numSynapses = 0
     self.numDisconnectedNeurons = 0
     
     # * For each neuron in this group
     for a in self.neurons:
       # ** Compute search rectangle in target group to select candidate neurons
-      rect = growthCone.getTerminationRect(a.location)
+      rect = self.growthCone.getTerminationRect(a.location)
       
       # ** Find candidate neurons from the other group
       candidates = []
       for b in group.qtree.hit(rect):  # optimized spatial range query
-        growthConeScore = growthCone.score(a.location, b.location)
+        if a == b and not allowSelfConnections: continue  # skip connecting to self, in case target group is same as this group
+        growthConeScore = self.growthCone.score(a.location, b.location)
         if growthConeScore > 0.1:
           candidates.append((growthConeScore, b))
       
