@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<Shape>
+  <Circle center="0.25 0.25" radius="0.16" color="0.2 0.8 0.8" />
+  <Point location="0.65 0.15" size="0.1" color="0.7 0.7 0.0" />
+  <Circle center="0.5 0.5" radius="0.25" color="0.6 0.8 0.8" filled="false" stroke="4">
+    <Line begin="0.5 0.2" end="0.9 0.5" color="0.8 0.4 0.5" />
+    <Point location="0.85 0.35" size="0.14" color="0.7 0.0 0.7" />
+  </Circle>
+  <Point location="0.6 0.45" size="0.01" color="0.7 0.35 0.7" />
+  <Shape>
+    <Line begin="0.3 0.6" end="0.4 0.5" color="0.75 0.4 0.4" />
+    <Circle center="0.25 0.75" radius="0.2" color="0.0 0.8 0.8" filled="0" />
+    <Rectangle begin="0.4 0.55" end="0.8 0.75" color="0.8 0.3 0.4" />
+  </Shape>
+</Shape>
