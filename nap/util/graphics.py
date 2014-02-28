@@ -9,6 +9,56 @@ import cv2
 import cv2.cv as cv
 
 
+def convert_SVG_to_image(filename=None, source=None):
+  """
+  Convert an SVG file or source string to OpenCV-compatible numpy image array (ARGB).
+  
+  Usage:
+  import cv2
+  import nap.util.graphics as g
+  
+  # Pass in filename directly
+  img = g.convert_SVG_to_image("drawing.svg")
+  
+  # Pass in file contents
+  with open("drawing.svg", "rb") as fileobj:
+    img = g.convert_SVG_to_image(None, fileobj.read())  # positional args
+  
+  # Pass in an SVG source string
+  svgSource = '<svg><rect width="300" height="100" style="fill:rgb(128,255,128);stroke-width:2;stroke:rgb(0,0,0)" /></svg>'
+  img = g.convert_SVG_to_image(source=svgSource)  # keywords args
+  
+  cv2.imshow("Image", img)
+  """
+  
+  if filename is None and source is None:
+    print "[ERROR] convert_SVG_to_image(): Must supply either filename or SVG source"
+    return None
+  
+  try:
+    import cairo
+    import rsvg
+    
+    # Create and SVG handler for given filename and get dimensions
+    handler = rsvg.Handle(filename) if filename is not None else rsvg.Handle(None, source)  # TODO is there a better way to do this?
+    #width, height, _, _ = handler.get_dimension_data()  # (width, height, float_width, float_height) ?
+    width = handler.props.width
+    height = handler.props.height
+    
+    # Create an image surface and render to it
+    imageSurface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
+    ctx = cairo.Context(imageSurface)
+    handler.render_cairo(ctx)
+    
+    # Extract raw ARGB data and convert to numpy array
+    image = np.ndarray((imageSurface.get_height(), imageSurface.get_width(), 4), dtype=np.uint8, buffer=imageSurface.get_data())
+    return image
+  except ImportError as e:
+    print "[ERROR] convert_SVG_to_image(): SVG support not available (pip install cairo; apt-get install python-rsvg):", e
+  
+  return None
+
+
 class GraphicsContext(object):
   """An encapsulation of common resources and meta information required by graphics objects."""
   
