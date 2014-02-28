@@ -37,10 +37,6 @@ class Drawing(object):
     self.shapeType = None  # selected shape type
     self.shape = None  # current shape being edited, if any
     self.shapeParams = dict(color="0.8 0.4 0.4", stroke=2, fill=False)  # initial values for common shape parameters
-    
-    self.isMouseDown = False
-    self.ptMouseDown = (-1, -1)
-    self.ptMouseDown = (-1, -1)
   
   def run(self):
     # Open window and register callbacks
@@ -91,18 +87,17 @@ class Drawing(object):
     return False  # unconsumed event
   
   def onMouseEvent(self, event, x, y, flags, param):
+    #print "[Mouse] flags: {:08b}, left: {}, right: {}".format(flags, bool(flags & cv2.EVENT_FLAG_LBUTTON), bool(flags & cv2.EVENT_FLAG_RBUTTON))  # [debug]
     if self.shapeType is not None:  # NOTE self.shapeType must be a Shape subclass
       xNorm = float(x) / self.canvas_width
       yNorm = float(y) / self.canvas_height
       if event == cv2.EVENT_LBUTTONDOWN:
-        self.isMouseDown = True
         self.createShape(xNorm, yNorm)
         self.updateOverlay()
-      elif event == cv2.EVENT_MOUSEMOVE and self.isMouseDown:  # drag (TODO check cv.CV_EVENT_FLAG_LBUTTON instead?)
+      elif event == cv2.EVENT_MOUSEMOVE and bool(flags & cv2.EVENT_FLAG_LBUTTON):
         self.updateShape(xNorm, yNorm)
         self.updateOverlay()
       elif event == cv2.EVENT_LBUTTONUP:
-        self.isMouseDown = False
         self.finalizeShape(xNorm, yNorm)
         self.updateCanvas()
         self.resetShape()  # do this after drawing to canvas and before clearing overlay
