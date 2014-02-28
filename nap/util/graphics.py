@@ -57,6 +57,7 @@ Field = namedtuple('Field', ['required', 'default', 'parser'])  # field definiti
 def str2bool(v):
   return v.lower() in ("true", "yes", "t", "1")
 
+
 class Shape(object):
   """Base class for all shapes with utility methods for easy inheritance and polymorphism."""
   
@@ -83,7 +84,7 @@ class Shape(object):
     # TODO Check for other exceptions
     return None
   
-  __fields = None  # top-level class's fieldset, name mangled to be class-unique
+  __fields = None  # top-level class's fieldset (common fields), name mangled to be class-unique
   fieldSets = dict()  # collection of fieldsets from all registered types, key=type
   
   def __init__(self, graphicsContext=None, **params):
@@ -252,12 +253,13 @@ def test_separate_shapes():
   lineStr = '<Line end="0.8 0.4" color="0.8 0.4 0.4" />'
   lineXML = ET.fromstring(lineStr)
   l = Shape.fromXMLElement(g, lineXML)
+  l.addChild(c1)
   print "str(l): {}".format(str(l))
   print "repr(l):-\n{}".format(repr(l))
   
   image = np.zeros((512, 512, 3), dtype=np.uint8)
   p.render(image)
-  c1.render(image)
+  #c1.render(image)  # c1 is a child of l, so it should get rendered there
   c2.render(image)
   l.render(image)
   cv2.imshow("Image", image)
