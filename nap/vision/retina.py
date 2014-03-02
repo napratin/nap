@@ -18,7 +18,7 @@ from matplotlib.pyplot import figure, show, hold, pause
 from matplotlib.colors import hsv_to_rgb
 
 from ..util.quadtree import Rect
-from ..neuron import Neuron, NeuronGroup, GrowthCone, MultivariateNormal, SymmetricLogNormal, plotNeuronGroups
+from ..neuron import Neuron, Population, GrowthCone, MultivariateNormal, SymmetricLogNormal, plotPopulations
 from .photoreceptor import Rod, Cone
 from .bipolar import BipolarCell
 
@@ -71,16 +71,16 @@ class Retina:
       self.imagesBipolar['ON'] = np.zeros((self.imageSize[1], self.imageSize[0], 1), dtype=np.uint8)
       self.imagesBipolar['OFF'] = np.zeros((self.imageSize[1], self.imageSize[0], 1), dtype=np.uint8)
     
-    # * Create neuron groups
+    # * Create neuron populations
     # ** Photoreceptors
-    self.rods = NeuronGroup(numNeurons=self.num_rods, timeNow=self.timeNow, neuronTypes=[Rod], bounds=self.bounds, distribution=self.rodDistribution, retina=self)
-    self.cones = NeuronGroup(numNeurons=self.num_cones, timeNow=self.timeNow, neuronTypes=[Cone], bounds=self.bounds, distribution=self.coneDistribution, retina=self)
+    self.rods = Population(numNeurons=self.num_rods, timeNow=self.timeNow, neuronTypes=[Rod], bounds=self.bounds, distribution=self.rodDistribution, retina=self)
+    self.cones = Population(numNeurons=self.num_cones, timeNow=self.timeNow, neuronTypes=[Cone], bounds=self.bounds, distribution=self.coneDistribution, retina=self)
     self.coneTypeNames = [coneType.name for coneType in Cone.cone_types]  # mainly for plotting
     
     # ** Bipolar cells
-    self.bipolarCells = NeuronGroup(numNeurons=self.num_bipolar_cells, timeNow=self.timeNow, neuronTypes=[BipolarCell], bounds=self.bounds, distribution=self.bipolarCellDistribution, retina=self)
+    self.bipolarCells = Population(numNeurons=self.num_bipolar_cells, timeNow=self.timeNow, neuronTypes=[BipolarCell], bounds=self.bounds, distribution=self.bipolarCellDistribution, retina=self)
     
-    # * Connect neuron groups
+    # * Connect neuron populations
     growthConeDirection = self.bipolarCells.distribution.mu - self.cones.distribution.mu  # NOTE only using cone distribution center
     growthConeDirection /= np.linalg.norm(growthConeDirection, ord=2)  # need a unit vector
     self.cones.connectWith(self.bipolarCells, maxConnectionsPerNeuron=10, growthCone=GrowthCone(growthConeDirection, spreadFactor=1))
@@ -122,7 +122,7 @@ class Retina:
       cv2.imshow("OFF Bipolar cells", self.imagesBipolar['OFF'])
   
   def plotPhotoreceptors3D(self):
-    plotNeuronGroups([self.rods, self.cones, self.bipolarCells], groupColors=[self.rodPlotColor, self.conePlotColor, self.bipolarCellPlotColor], showConnections=True, equalScaleZ=True)
+    plotPopulations([self.rods, self.cones, self.bipolarCells], populationColors=[self.rodPlotColor, self.conePlotColor, self.bipolarCellPlotColor], showConnections=True, equalScaleZ=True)
   
   def plotPhotoreceptorDensities(self, ax=None):
     # Check if axis has been supplied; if not, create new single-axis (-plot) figure

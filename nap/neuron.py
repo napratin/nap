@@ -265,7 +265,7 @@ class Neuron:
     return "{}: {{ {} }}".format(self.__class__.__name__, ", ".join("{}: {}".format(attr, getattr(self, attr)) for attr in self.__class__._str_attrs))
 
 
-class NeuronGroup:
+class Population:
   default_bounds = np.float32([[-50.0, -50.0, -5.0], [50.0, 50.0, 5.0]])
   default_distribution = MultivariateNormal(mu=np.float32([0.0, 0.0, 0.0]), cov=(np.float32([400, 400, 4]) * np.identity(3, dtype=np.float32)))
   
@@ -337,11 +337,11 @@ class NeuronGroup:
     self.qtree = QuadTree(self.neurons, depth=int(log(self.numNeurons, 2)), bounding_rect=boundingRect)
   
   # TODO Move this to Projection
-  def connectWith(self, group, maxConnectionsPerNeuron, growthCone=None, allowSelfConnections=False):
+  def connectWith(self, population, maxConnectionsPerNeuron, growthCone=None, allowSelfConnections=False):
     if growthCone is not None:
       self.growthCone = growthCone
     else:
-      growthConeDirection = group.center - self.center
+      growthConeDirection = population.center - self.center
       growthConeLength = np.linalg.norm(growthConeDirection, ord=2)
       growthConeDirection /= growthConeLength  # need a unit vector
       self.growthCone = GrowthCone(growthConeDirection, maxLength=growthConeLength * 2.0, spreadFactor=1)
@@ -349,15 +349,15 @@ class NeuronGroup:
     self.numSynapses = 0
     self.numDisconnectedNeurons = 0
     
-    # * For each neuron in this group
+    # * For each neuron in this population
     for a in self.neurons:
-      # ** Compute search rectangle in target group to select candidate neurons
+      # ** Compute search rectangle in target population to select candidate neurons
       rect = self.growthCone.getTerminationRect(a.location)
       
-      # ** Find candidate neurons from the other group
+      # ** Find candidate neurons from the other population
       candidates = []
-      for b in group.qtree.hit(rect):  # optimized spatial range query
-        if a == b and not allowSelfConnections: continue  # skip connecting to self, in case target group is same as this group
+      for b in population.qtree.hit(rect):  # optimized spatial range query
+        if a == b and not allowSelfConnections: continue  # skip connecting to self, in case target population is same as this population
         growthConeScore = self.growthCone.score(a.location, b.location)
         if growthConeScore > 0.1:
           candidates.append((growthConeScore, b))
@@ -371,17 +371,17 @@ class NeuronGroup:
       if not a.synapses:
         self.numDisconnectedNeurons += 1
     
-    self.logger.debug("Pre: {}, post: {}, #synapses: {}, (avg.: {} per pre-neuron), #disconnected: {}".format(len(self.neurons), len(group.neurons), self.numSynapses, float(self.numSynapses) / len(self.neurons), self.numDisconnectedNeurons))
+    self.logger.debug("Pre: {}, post: {}, #synapses: {}, (avg.: {} per pre-neuron), #disconnected: {}".format(len(self.neurons), len(population.neurons), self.numSynapses, float(self.numSynapses) / len(self.neurons), self.numDisconnectedNeurons))
     self.isConnected = True
   
-  def plotNeuronLocations3D(self, ax=None, showConnections=True, groupColor=None, connectionColor=None, equalScaleZ=False):
+  def plotNeuronLocations3D(self, ax=None, showConnections=True, populationColor=None, connectionColor=None, equalScaleZ=False):
     standalone = False
     if ax is None:
       standalone = True
       fig = figure()
       ax = fig.gca(projection='3d')
     
-    ax.scatter(self.neuronLocations[:,0], self.neuronLocations[:,1], self.neuronLocations[:,2], c=(self.neuronPlotColors if groupColor is None else groupColor))
+    ax.scatter(self.neuronLocations[:,0], self.neuronLocations[:,1], self.neuronLocations[:,2], c=(self.neuronPlotColors if populationColor is None else populationColor))
     if showConnections and self.isConnected:
       for n in self.neurons:
         frm = n.location
@@ -408,26 +408,26 @@ class NeuronGroup:
       show()
   
   def __str__(self):
-    return "NeuronGroup: {{ numNeurons: {}, neuronTypes: [{}] }}".format(self.numNeurons, ", ".join(t.__name__ for t in self.neuronTypes))
+    return "Population: {{ numNeurons: {}, neuronTypes: [{}] }}".format(self.numNeurons, ", ".join(t.__name__ for t in self.neuronTypes))
   
   def __repr__(self):
-    return "NeuronGroup: {{ numNeurons: {}, neuronTypes: [{}], bounds: {}, distribution: {} }}".format(self.numNeurons, ", ".join(t.__name__ for t in self.neuronTypes), repr(self.bounds), self.distribution)
+    return "Population: {{ numNeurons: {}, neuronTypes: [{}], bounds: {}, distribution: {} }}".format(self.numNeurons, ", ".join(t.__name__ for t in self.neuronTypes), repr(self.bounds), self.distribution)
 
 
-def plotNeuronGroups(neuronGroups, groupColors=None, showConnections=True, connectionColors=None, equalScaleZ=False):
-  if groupColors == None:
-    groupColors = [None] * len(neuronGroups)
+def plotPopulations(populations, populationColors=None, showConnections=True, connectionColors=None, equalScaleZ=False):
+  if populationColors == None:
+    populationColors = [None] * len(populations)
   if connectionColors == None:
-    connectionColors = [None] * len(neuronGroups)
+    connectionColors = [None] * len(populations)
   
   fig = figure()
   ax = fig.gca(projection='3d')  # effectively same as fig.add_subplot(111, projection='3d')
   
   plot_bounds = np.float32([np.repeat(np.inf, 3), np.repeat(-np.inf, 3)])
-  for group, groupColor, connectionColor in zip(neuronGroups, groupColors, connectionColors):
-    group.plotNeuronLocations3D(ax, showConnections=showConnections, groupColor=groupColor, connectionColor=connectionColor)
-    plot_bounds[0, :] = np.minimum(plot_bounds[0], group.bounds[0])
-    plot_bounds[1, :] = np.maximum(plot_bounds[1], group.bounds[1])
+  for population, populationColor, connectionColor in zip(populations, populationColors, connectionColors):
+    population.plotNeuronLocations3D(ax, showConnections=showConnections, populationColor=populationColor, connectionColor=connectionColor)
+    plot_bounds[0, :] = np.minimum(plot_bounds[0], population.bounds[0])
+    plot_bounds[1, :] = np.maximum(plot_bounds[1], population.bounds[1])
   
   plot_sizes = (plot_bounds[1] - plot_bounds[0])
   max_plot_size = max(plot_sizes)
@@ -448,19 +448,19 @@ def plotNeuronGroups(neuronGroups, groupColors=None, showConnections=True, conne
   show()
 
 
-def test_neuronGroup():
+def test_population():
   logging.basicConfig(format="%(levelname)s | %(name)s | %(funcName)s() | %(message)s", level=logging.DEBUG)  # sets up basic logging, if it's not already configured
   startTime = time()
   timeNow = 0.0
-  group1 = NeuronGroup(numNeurons=1000, timeNow=timeNow)
-  group2 = NeuronGroup(numNeurons=500, timeNow=timeNow, bounds=np.float32([[-25.0, -25.0, 7.5], [25.0, 25.0, 12.5]]), distribution=MultivariateNormal(mu=np.float32([0.0, 0.0, 10.0]), cov=(np.float32([400, 400, 4]) * np.identity(3))))
-  growthConeDirection = group2.distribution.mu - group1.distribution.mu
+  population1 = Population(numNeurons=1000, timeNow=timeNow)
+  population2 = Population(numNeurons=500, timeNow=timeNow, bounds=np.float32([[-25.0, -25.0, 7.5], [25.0, 25.0, 12.5]]), distribution=MultivariateNormal(mu=np.float32([0.0, 0.0, 10.0]), cov=(np.float32([400, 400, 4]) * np.identity(3))))
+  growthConeDirection = population2.distribution.mu - population1.distribution.mu
   growthConeDirection /= np.linalg.norm(growthConeDirection, ord=2)  # need a unit vector
-  group1.connectWith(group2, maxConnectionsPerNeuron=25, growthCone=GrowthCone(growthConeDirection))
-  #group2.plotNeuronLocations3D(equalScaleZ=True)  # e.g.: plot a single neuron group
-  plotNeuronGroups([group1, group2], groupColors=['b', 'r'], showConnections=True, connectionColors=[None, None], equalScaleZ=True)
+  population1.connectWith(population2, maxConnectionsPerNeuron=25, growthCone=GrowthCone(growthConeDirection))
+  #population2.plotNeuronLocations3D(equalScaleZ=True)  # e.g.: plot a single neuron population
+  plotPopulations([population1, population2], populationColors=['b', 'r'], showConnections=True, connectionColors=[None, None], equalScaleZ=True)
   # NOTE: For connectionColors, pass None to draw connection lines with pre-neuron's color; or specify colors explicitly, e.g.: connectionColors=[(0.9, 0.8, 1.0, 0.5), None]
 
 
 if __name__ == "__main__":
-  test_neuronGroup()
+  test_population()

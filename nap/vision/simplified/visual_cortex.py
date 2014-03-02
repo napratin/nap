@@ -7,7 +7,7 @@ import cv2.cv as cv
 
 from lumos.input import run
 
-from ...neuron import Neuron, NeuronGroup, threshold_potential, action_potential_peak, action_potential_trough, refractory_period, neuron_inhibition_period, Uniform, MultivariateUniform, MultivariateNormal, plotNeuronGroups
+from ...neuron import Neuron, Population, threshold_potential, action_potential_peak, action_potential_trough, refractory_period, neuron_inhibition_period, Uniform, MultivariateUniform, MultivariateNormal, plotPopulations
 from .retina import Retina, SimplifiedProjector
 
 class SalienceNeuron(Neuron):
@@ -141,18 +141,18 @@ class CorticalProjector(SimplifiedProjector):
   def __init__(self, retina=None):
     SimplifiedProjector.__init__(self, retina if retina is not None else Retina())
     
-    # * Create layers of cortical neurons (TODO move this to VisualCortex; rename e.g. salienceNeurons -> populations['Salience'] for salience population, and with that neuron.NeuronGroup -> neuron.Population)
+    # * Create layers of cortical neurons (TODO move this to VisualCortex; rename e.g. salienceNeurons -> populations['Salience'] for salience population, and with that neuron.Population -> neuron.Population)
     # ** Salience neurons (TODO introduce magno and parvo types)
     self.salienceLayerBounds = np.float32([[0.0, 0.0, 0.0], [self.retina.imageSize[0] - 1, self.retina.imageSize[1] - 1, 0.0]])
     #self.salienceNeuronDistribution = MultivariateNormal(mu=self.retina.center, cov=(np.float32([self.retina.center[0] ** 2, self.retina.center[0] ** 2, 1.0]) * np.identity(3, dtype=np.float32)))
     self.salienceNeuronDistribution = MultivariateUniform(lows=[0.0, 0.0, 0.0], highs=[self.retina.imageSize[1], self.retina.imageSize[0], 0.0])
-    self.salienceNeurons = NeuronGroup(numNeurons=self.num_salience_neurons, timeNow=0.0, neuronTypes=[SalienceNeuron], bounds=self.salienceLayerBounds, distribution=self.salienceNeuronDistribution, retina=self.retina)  # TODO use timeNow when moved to VisualCortex
+    self.salienceNeurons = Population(numNeurons=self.num_salience_neurons, timeNow=0.0, neuronTypes=[SalienceNeuron], bounds=self.salienceLayerBounds, distribution=self.salienceNeuronDistribution, retina=self.retina)  # TODO use timeNow when moved to VisualCortex
     self.salienceNeuronPlotColor = 'coral'
     
     # ** Selection neurons
     self.selectionLayerBounds = np.float32([[0.0, 0.0, 50.0], [self.retina.imageSize[0] - 1, self.retina.imageSize[1] - 1, 50.0]])
     self.selectionNeuronDistribution = MultivariateUniform(lows=[0.0, 0.0, 50.0], highs=[self.retina.imageSize[1], self.retina.imageSize[0], 50.0])
-    self.selectionNeurons = NeuronGroup(numNeurons=self.num_selection_neurons, timeNow=0.0, neuronTypes=[SelectionNeuron], bounds=self.selectionLayerBounds, distribution=self.selectionNeuronDistribution, retina=self.retina)  # TODO use timeNow when moved to VisualCortex
+    self.selectionNeurons = Population(numNeurons=self.num_selection_neurons, timeNow=0.0, neuronTypes=[SelectionNeuron], bounds=self.selectionLayerBounds, distribution=self.selectionNeuronDistribution, retina=self.retina)  # TODO use timeNow when moved to VisualCortex
     self.selectionNeuronPlotColor = 'olive'
     
     # * Connect neuron layers
@@ -166,7 +166,7 @@ class CorticalProjector(SimplifiedProjector):
         source.gateNeuron(target)
     
     # * Show neuron layers and connections [debug]
-    #plotNeuronGroups([self.salienceNeurons, self.selectionNeurons], groupColors=[self.salienceNeuronPlotColor, self.selectionNeuronPlotColor], showConnections=True, equalScaleZ=True)  # [debug]
+    #plotPopulations([self.salienceNeurons, self.selectionNeurons], populationColors=[self.salienceNeuronPlotColor, self.selectionNeuronPlotColor], showConnections=True, equalScaleZ=True)  # [debug]
     
     # * Top-level interface
     self.selectedNeuron = None  # the last selected SelectionNeuron, mainly for display and top-level output
