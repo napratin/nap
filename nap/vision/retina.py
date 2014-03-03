@@ -23,7 +23,11 @@ from .photoreceptor import Rod, Cone
 from .bipolar import BipolarCell
 
 class Retina:
-  """A multi-layered surface for hosting different types of neurons that make up a retina."""
+  """A multi-layered surface for hosting different types of neurons that make up a retina.
+  
+  [Deprecated] Use VisualSystem instead.
+  
+  """
   
   num_rods = 10000  # humans: 90-120 million
   num_cones = 1000  # humans: 4.5-6 million
@@ -229,7 +233,7 @@ class Projector(FrameProcessor):
     # Copy image to screen, and part of screen to retina (TODO optimize this to a single step?)
     self.screen[self.imageRect[2]:self.imageRect[3], self.imageRect[0]:self.imageRect[1]] = self.image
     #if self.context.options.gui: cv2.imshow("Screen", self.screen)  # [debug]
-    self.retina.imageBGR[:] = self.screen[self.focusRect[2]:self.focusRect[3], self.focusRect[0]:self.focusRect[1]]
+    self.retina.images['BGR'][:] = self.screen[self.focusRect[2]:self.focusRect[3], self.focusRect[0]:self.focusRect[1]]  # NOTE only compatible with VisualSystem
     #if self.context.options.gui: cv2.imshow("Retina", self.retina.imageBGR)  # [debug]
     
     self.retina.update(timeNow)

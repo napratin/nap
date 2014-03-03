@@ -12,7 +12,12 @@ from ..photoreceptor import Rod, Cone
 from ..retina import Projector
 
 class Retina:
-  """A multi-layered surface for hosting different types of neurons that make up a retina, simplified version."""
+  """
+  A multi-layered surface for hosting different types of neurons that make up a retina, simplified version.
+  
+  [Deprecated] Use VisualSystem instead.
+  
+  """
   
   default_image_size = (480, 480)
   
