@@ -42,8 +42,8 @@ class QuadTree(object):
     
     # If we've reached the maximum depth then insert all items into this
     # quadrant.
-    depth -= 1
-    if depth == 0:
+    #print "QuadTree.__init__(): #items: {}, depth: {}, bounding_rect: {}".format(len(items), depth, bounding_rect)  # [debug]
+    if depth <= 1 or len(items) <= 1:
       self.items = items
       return
  
@@ -72,7 +72,7 @@ class QuadTree(object):
           nw_items.append(item)
         else:
           sw_items.append(item)
-      elif item.location[0] >= cx:
+      else:
         if item.location[1] < cy:
           ne_items.append(item)
         else:
@@ -80,13 +80,13 @@ class QuadTree(object):
     
     # Create the sub-quadrants, recursively.
     if nw_items:
-      self.nw = QuadTree(nw_items, depth, (l, t, cx, cy))
+      self.nw = QuadTree(nw_items, depth - 1, (l, t, cx, cy))
     if ne_items:
-      self.ne = QuadTree(ne_items, depth, (cx, t, r, cy))
+      self.ne = QuadTree(ne_items, depth - 1, (cx, t, r, cy))
     if se_items:
-      self.se = QuadTree(se_items, depth, (cx, cy, r, b))
+      self.se = QuadTree(se_items, depth - 1, (cx, cy, r, b))
     if sw_items:
-      self.sw = QuadTree(sw_items, depth, (l, cy, cx, b))
+      self.sw = QuadTree(sw_items, depth - 1, (l, cy, cx, b))
   
   def hit(self, rect):
     """Returns the items that overlap a bounding rectangle.

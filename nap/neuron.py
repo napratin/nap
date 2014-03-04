@@ -1,14 +1,14 @@
 """A neuron model based on a biologically inspired neuronal architecture."""
 
 import logging
-from time import time
-from math import pi, exp, log, sqrt
+from math import pi, exp, log
 import random
-from collections import namedtuple, deque
+from collections import namedtuple
+from threading import Thread
 import numpy as np
 import cv2
 
-from matplotlib.pyplot import figure, plot, axis, show, subplots_adjust
+from matplotlib.pyplot import figure, plot, axis, show, subplots_adjust, title, xlabel, ylabel, axhline
 from mpl_toolkits.mplot3d import Axes3D
 
 from .util.quadtree import Rect, QuadTree
@@ -38,18 +38,6 @@ neuron_inhibition_period = 1.25  #  secs.; duration for which the effect of inhi
 
 # Graph parameters
 plot_colors = 'bgrcmy'
-
-
-class Projection:
-  pass
-
-
-class Dendrite(Projection):
-  pass
-
-
-class Axon(Projection):
-  pass
 
 
 class GrowthCone:
@@ -119,7 +107,7 @@ class Synapse:
     self.uninhibitAt = timeNow + duration
 
 
-class Neuron:
+class Neuron(object):
   """A simple excitable neuron cell with synaptic connections, potential accumulation and decay functionality."""
   
   id_ctr = 0  # auto-incremented counter to assign unique IDs to instances
@@ -265,11 +253,11 @@ class Neuron:
     return "{}: {{ {} }}".format(self.__class__.__name__, ", ".join("{}: {}".format(attr, getattr(self, attr)) for attr in self.__class__._str_attrs))
 
 
-class Population:
+class Population(object):
   default_bounds = np.float32([[-50.0, -50.0, -5.0], [50.0, 50.0, 5.0]])
   default_distribution = MultivariateNormal(mu=np.float32([0.0, 0.0, 0.0]), cov=(np.float32([400, 400, 4]) * np.identity(3, dtype=np.float32)))
   
-  def __init__(self, numNeurons=1000, timeNow=0.0, neuronTypes=[Neuron], bounds=default_bounds, distribution=default_distribution, **kwargs):
+  def __init__(self, numNeurons=1000, timeNow=0.0, neuronTypes=[Neuron], bounds=default_bounds, neuronLocations=None, distribution=default_distribution, **kwargs):
     self.numNeurons = numNeurons
     self.timeNow = timeNow
     self.neuronTypes = neuronTypes
@@ -283,41 +271,44 @@ class Population:
     self.logger.debug("Bounds: x: {}, y: {}, z: {}".format(self.bounds[:,0], self.bounds[:,1], self.bounds[:,2]))
     
     # * Designate neuron locations
-    self.neuronLocations = []
-    if isinstance(self.distribution, MultivariateUniform):
-      # NOTE self.distribution has to be a 3-dimensional MultivariateUniform, even if the third dimension is a constant (low=high)
-      self.neuronLocations = np.column_stack([
-        np.random.uniform(self.distribution.lows[0], self.distribution.highs[0], self.numNeurons),
-        np.random.uniform(self.distribution.lows[1], self.distribution.highs[1], self.numNeurons),
-        np.random.uniform(self.distribution.lows[2], self.distribution.highs[2], self.numNeurons)])
-      #self.logger.debug("MultivariateUniform array shape: {}".format(self.neuronLocations.shape))
-    elif isinstance(self.distribution, MultivariateNormal):
-      #self.logger.debug("Distribution: mu: {}, cov: {}".format(self.distribution.mu, self.distribution.cov))  # ugly
-      self.neuronLocations = np.random.multivariate_normal(self.distribution.mu, self.distribution.cov, self.numNeurons)
-    elif isinstance(self.distribution, SymmetricNormal):
-      thetas = np.random.uniform(pi, -pi, self.numNeurons)  # symmetric in any direction around Z axis
-      rads = np.random.normal(self.distribution.mu, self.distribution.sigma, self.numNeurons)  # varies radially
-      xLocs, yLocs = cv2.polarToCart(rads, thetas)
-      zLocs = np.repeat(np.float32([self.distribution.center[2]]), self.numNeurons).reshape((self.numNeurons, 1))  # constant z, repeated as a column vector
-      #self.logger.debug("SymmetricNormal array shapes:- x: {}, y: {}, z: {}".format(xLocs.shape, yLocs.shape, zLocs.shape))
-      self.neuronLocations = np.column_stack([
-        self.distribution.center[0] + xLocs,
-        self.distribution.center[1] + yLocs,
-        zLocs])  # build Nx3 numpy array
-    elif isinstance(self.distribution, SymmetricLogNormal):
-      thetas = np.random.uniform(pi, -pi, self.numNeurons)  # symmetric in any direction around Z axis
-      rads = np.random.lognormal(self.distribution.mu, self.distribution.sigma, self.numNeurons)  # varies radially
-      xLocs, yLocs = cv2.polarToCart(rads, thetas)
-      zLocs = np.repeat(np.float32([self.distribution.center[2]]), self.numNeurons).reshape((self.numNeurons, 1))  # constant z, repeated as a column vector
-      #self.logger.debug("SymmetricLogNormal array shapes:- x: {}, y: {}, z: {}".format(xLocs.shape, yLocs.shape, zLocs.shape))
-      self.neuronLocations = np.column_stack([
-        self.distribution.center[0] + xLocs,
-        self.distribution.center[1] + yLocs,
-        zLocs])  # build Nx3 numpy array
+    if neuronLocations is not None:
+      self.neuronLocations = neuronLocations
     else:
-      raise ValueError("Unknown distribution type: {}".format(type(self.distribution)))
-    # TODO Include (non-central) F distribution (suitable for rods)
-    
+      self.neuronLocations = []
+      if isinstance(self.distribution, MultivariateUniform):
+        # NOTE self.distribution has to be a 3-channel MultivariateUniform, even if the third channel is a constant (low=high)
+        self.neuronLocations = np.column_stack([
+          np.random.uniform(self.distribution.lows[0], self.distribution.highs[0], self.numNeurons),
+          np.random.uniform(self.distribution.lows[1], self.distribution.highs[1], self.numNeurons),
+          np.random.uniform(self.distribution.lows[2], self.distribution.highs[2], self.numNeurons)])
+        #self.logger.debug("MultivariateUniform array shape: {}".format(self.neuronLocations.shape))
+      elif isinstance(self.distribution, MultivariateNormal):
+        #self.logger.debug("Distribution: mu: {}, cov: {}".format(self.distribution.mu, self.distribution.cov))  # ugly
+        self.neuronLocations = np.random.multivariate_normal(self.distribution.mu, self.distribution.cov, self.numNeurons)
+      elif isinstance(self.distribution, SymmetricNormal):
+        thetas = np.random.uniform(pi, -pi, self.numNeurons)  # symmetric in any direction around Z axis
+        rads = np.random.normal(self.distribution.mu, self.distribution.sigma, self.numNeurons)  # varies radially
+        xLocs, yLocs = cv2.polarToCart(rads, thetas)
+        zLocs = np.repeat(np.float32([self.distribution.center[2]]), self.numNeurons).reshape((self.numNeurons, 1))  # constant z, repeated as a column vector
+        #self.logger.debug("SymmetricNormal array shapes:- x: {}, y: {}, z: {}".format(xLocs.shape, yLocs.shape, zLocs.shape))
+        self.neuronLocations = np.column_stack([
+          self.distribution.center[0] + xLocs,
+          self.distribution.center[1] + yLocs,
+          zLocs])  # build Nx3 numpy array
+      elif isinstance(self.distribution, SymmetricLogNormal):
+        thetas = np.random.uniform(pi, -pi, self.numNeurons)  # symmetric in any direction around Z axis
+        rads = np.random.lognormal(self.distribution.mu, self.distribution.sigma, self.numNeurons)  # varies radially
+        xLocs, yLocs = cv2.polarToCart(rads, thetas)
+        zLocs = np.repeat(np.float32([self.distribution.center[2]]), self.numNeurons).reshape((self.numNeurons, 1))  # constant z, repeated as a column vector
+        #self.logger.debug("SymmetricLogNormal array shapes:- x: {}, y: {}, z: {}".format(xLocs.shape, yLocs.shape, zLocs.shape))
+        self.neuronLocations = np.column_stack([
+          self.distribution.center[0] + xLocs,
+          self.distribution.center[1] + yLocs,
+          zLocs])  # build Nx3 numpy array
+      else:
+        raise ValueError("Unknown distribution type: {}".format(type(self.distribution)))
+      # TODO Include (non-central) F distribution (suitable for rods)
+      
     # Clip (clamp) neuron locations that are outside bounds
     np.clip(self.neuronLocations[:, 0], self.bounds[0, 0], self.bounds[1, 0], out=self.neuronLocations[:, 0])
     np.clip(self.neuronLocations[:, 1], self.bounds[0, 1], self.bounds[1, 1], out=self.neuronLocations[:, 1])
@@ -384,8 +375,8 @@ class Population:
     ax.scatter(self.neuronLocations[:,0], self.neuronLocations[:,1], self.neuronLocations[:,2], c=(self.neuronPlotColors if populationColor is None else populationColor))
     if showConnections and self.isConnected:
       for n in self.neurons:
-        frm = n.location
-        to = n.location + self.growthCone.maxLength * self.growthCone.direction
+        #frm = n.location
+        #to = n.location + self.growthCone.maxLength * self.growthCone.direction
         #ax.plot((frm[0], to[0]), (frm[1], to[1]), (frm[2], to[2]))  # [debug: draw growth cone vector]
         for s in n.synapses:
           ax.plot((n.location[0], s.post.location[0]), (n.location[1], s.post.location[1]), (n.location[2], s.post.location[2]), c=(n.plotColor if connectionColor is None else connectionColor))
@@ -412,6 +403,11 @@ class Population:
   
   def __repr__(self):
     return "Population: {{ numNeurons: {}, neuronTypes: [{}], bounds: {}, distribution: {} }}".format(self.numNeurons, ", ".join(t.__name__ for t in self.neuronTypes), repr(self.bounds), self.distribution)
+
+
+class Projection(object):
+  """A set of connections from one Population to another."""
+  pass  # TODO Implement this class by pulling out connection-related methods from Population
 
 
 def plotPopulations(populations, populationColors=None, showConnections=True, connectionColors=None, equalScaleZ=False):
@@ -448,9 +444,141 @@ def plotPopulations(populations, populationColors=None, showConnections=True, co
   show()
 
 
+# Neuron-specific utility constructs and methods
+
+def setup_neuron_plot(plotTitle="Neuron", xlab="Time (s)", ylab="Membrane potential (V)"):
+  if plotTitle is not None: title(plotTitle)
+  if xlab is not None: xlabel(xlab)
+  if ylab is not None: ylabel(ylab)
+  
+  axhline(y = Neuron.resting_potential.mu, color = 'k', linestyle = '--')
+  axhline(y = threshold_potential, color = 'r', linestyle = '--')
+  axhline(y = action_potential_peak, color = 'c', linestyle = '--')
+  axhline(y = action_potential_trough.mu, color = 'm', linestyle = '--')
+
+
+class NeuronMonitor(object):
+  """A live plotting thread to monitor neuron output."""
+  
+  # Instance parameters with default values that automatically get populated as object attributes in __init__(), overwritten by matching kwargs
+  _params = dict(
+    duration=5.0,  # seconds of data to show (approx.)
+    sampling_rate=15,  # Hz
+    show_axvline=True,  # show a solid vertical line to indicate current time
+    axvline_params=dict(linewidth=3, color='r'),
+    show_axhlines=True,  # show dotted horizontal lines to mark resting potential, threshold potential, etc.
+    axhline_resting_potential=Neuron.resting_potential.mu,
+    axhline_threshold_potential=threshold_potential,
+    axhline_action_potential_peak=action_potential_peak,
+    axhline_action_potential_trough=action_potential_trough.mu)
+  
+  # Axes parameters passed to Figure.gca(), also overwritten by kwargs
+  _axes_params=dict(
+    title="Neuron",
+    xlabel="Time (s)",
+    ylabel="Membrane potential (V)",
+    ylim=(action_potential_trough.mu - 0.01, action_potential_peak + 0.02))
+  
+  # Common plotting parameters passed to Axes.plot(), also overwritten by kwargs
+  _plot_params = dict()
+  
+  @classmethod
+  def resolve_params(cls, default_params, given_params):
+    """A generator over default_params, updated with values from given_params with matching keys.
+    
+    To convert resulting (param, value) pairs into a dict, use: dict(resolve_params(..., ...))
+    NOTE: Matched items from given_params are popped to enforce unique matching and the idea of *leftover* params.
+    TODO: Make this a generic utility method.
+    
+    """
+    # Equivalent dict comprehension: {param: given_params.pop(param, value) for param, value in default_params}
+    for param, value in default_params.iteritems():
+      yield param, given_params.pop(param, value)  # pick from given_params, if supplied, popping it
+  
+  def __init__(self, **kwargs):
+    self.logger = logging.getLogger(self.__class__.__name__)
+    
+    # Set instance attributes from kwargs with defaults from _params
+    for param, value in self.resolve_params(self._params, kwargs):
+      setattr(self, param, value)
+    
+    # Process remaining kwargs
+    self.axes_params = dict(self.resolve_params(self._axes_params, kwargs))  # pops matched params from kwargs
+    # TODO Modify xlabel to say "Time (s) mod {duration}"?
+    self.plot_params = dict(self.resolve_params(self._plot_params, kwargs))
+    
+    # Initialize other members
+    self.num_samples = self.duration * self.sampling_rate
+    self.times = np.linspace(0.0, self.duration, self.num_samples)  # pick num_samples samples in the range [0.0, duration]
+    self.sample_index = 0  # common index into each channel's samples array
+    self.channels = dict()
+  
+  def addChannel(self, label, obj, attr='potential', analog=True):
+    """Add a new channel to this monitor for plotting obj.attr."""
+    channel = dict(obj=obj, attr=attr, analog=analog, samples=np.repeat(np.float32(getattr(obj, attr, 0.0)), self.num_samples))
+    self.channels[label] = channel  # samples will be plotted when start() is called
+  
+  def start(self, run_setup=True, run_update_loop=True):
+    """Create plots, optionally run setup before and begin update loop after.
+    
+    NOTE: If setup() and update() are run externally, all these methods should be called from the same dedicated thread/process.
+    
+    """
+    # Setup graphics
+    if run_setup:
+      self.setup()
+    
+    # Create initial plots
+    for label, channel in self.channels.iteritems():
+      # TODO Create different plots based on analog flag
+      channel['plot'] = self.ax.plot(self.times, channel['samples'], label=label, **self.plot_params)[0]  # assuming first (and only) returned plot is the one we want
+    self.ax.legend(loc='upper right')
+    self.fig.show()
+    
+    # Begin update loop
+    if run_update_loop:
+      self.update_loop()
+  
+  def stop(self):
+    if hasattr(self, 'update_timer'):
+      self.update_timer.stop()
+      self.logger.debug("Update loop stopped")
+  
+  def setup(self):
+    self.fig = figure(figsize=(12, 9))  # figsize is in inches
+    self.ax = self.fig.gca(**self.axes_params)
+    if self.show_axhlines:
+      # TODO This only draws known axhlines; to extend this, use:
+      #   for axhline_name, params in self.vars() if axhline_name.startswith('axhline'):
+      #     self.ax.axhline(dict(linestyle='--').update(**params))  # default to dashed lines
+      # Corresponding items in _params will need to be updated:
+      #   axhline_resting_potential=dict(y=self.neuron_threshold_potential, color='r', linestyle='--')
+      self.ax.axhline(y=self.axhline_resting_potential, color='k', linestyle='--')
+      self.ax.axhline(y=self.axhline_threshold_potential, color='r', linestyle='--')
+      self.ax.axhline(y=self.axhline_action_potential_peak, color='c', linestyle='--')
+      self.ax.axhline(y=self.axhline_action_potential_trough, color='m', linestyle='--')
+    if self.show_axvline:
+      self.axvline = self.ax.axvline(**self.axvline_params)
+  
+  def update_loop(self):
+    self.update_timer = self.fig.canvas.new_timer(interval=int(1000 / self.sampling_rate))
+    self.update_timer.add_callback(self.update)
+    self.update_timer.start()
+    self.logger.debug("Update loop started")
+  
+  def update(self):
+    """Update all channel plots, copying in respective attr value from obj. Meant to be called from same thread/process as start()."""
+    if self.show_axvline:
+      self.axvline.set_xdata(self.times[self.sample_index])
+    for channel in self.channels.itervalues():
+      channel['samples'][self.sample_index] = getattr(channel['obj'], channel['attr'])  # retrieve current value
+      channel['plot'].set_ydata(channel['samples'])  # update plot
+    self.sample_index = (self.sample_index + 1) % self.num_samples  # increment common index
+    self.fig.canvas.draw()
+
+
 def test_population():
   logging.basicConfig(format="%(levelname)s | %(name)s | %(funcName)s() | %(message)s", level=logging.DEBUG)  # sets up basic logging, if it's not already configured
-  startTime = time()
   timeNow = 0.0
   population1 = Population(numNeurons=1000, timeNow=timeNow)
   population2 = Population(numNeurons=500, timeNow=timeNow, bounds=np.float32([[-25.0, -25.0, 7.5], [25.0, 25.0, 12.5]]), distribution=MultivariateNormal(mu=np.float32([0.0, 0.0, 10.0]), cov=(np.float32([400, 400, 4]) * np.identity(3))))

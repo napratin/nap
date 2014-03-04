@@ -1,5 +1,6 @@
 """A biologically-inspired model of visual perception."""
 
+from math import exp
 import logging
 import numpy as np
 import cv2
@@ -9,10 +10,31 @@ import cv2.cv as cv
 from lumos.context import Context
 from lumos.input import InputDevice, run
 
-from ..neuron import Neuron, Population, Projection, MultivariateUniform
+from ..neuron import Neuron, Population, Projection, neuron_inhibition_period, Uniform, MultivariateUniform, NeuronMonitor
 from .photoreceptor import Rod, Cone
 from .simplified.retina import SimplifiedProjector
-from .simplified.visual_cortex import SalienceNeuron, SelectionNeuron
+from .simplified.visual_cortex import SalienceNeuron, SelectionNeuron, FeatureNeuron
+
+
+class VisualFeaturePathway(object):
+  """A collection of connected neuron populations that together compute a particular visual feature."""
+  
+  def __init__(self, label, populations, projections, output=None, timeNow=0.0):
+    self.label = label
+    self.populations = populations  # order of populations matters here; this is the order in which they will be updated
+    self.projections = projections
+    #assert output in self.populations  # usually, output is a population, but it can be something else
+    self.output = output
+    self.timeNow = timeNow
+    
+    # * Top-level interface (TODO add neuron response/spike frequency as measure of strength)
+    self.active = True  # used to selectively update specific pathways
+    self.selectedNeuron = None  # the last selected SelectionNeuron, mainly for display and top-level output
+    self.selectedTime = 0.0  # corresponding timestamp
+  
+  def update(self, timeNow):
+    self.timeNow = timeNow
+    # feature pathway specific updates may need to be carried out externally
 
 
 class VisualSystem(object):
@@ -25,7 +47,7 @@ class VisualSystem(object):
   num_salience_neurons = 400
   num_selection_neurons = 100
   
-  default_image_size = (480, 480)  # (width, height)
+  default_image_size = (256, 256)  # (width, height)
   
   def __init__(self, imageSize=default_image_size, timeNow=0.0):
     # * Get context and logger
@@ -44,6 +66,7 @@ class VisualSystem(object):
     self.imageCenter = (self.imageSize[1] / 2, self.imageSize[0] / 2)
     self.imageShapeC3 = (self.imageSize[1], self.imageSize[0], 3)  # numpy shape for 3 channel images
     self.imageShapeC1 = (self.imageSize[1], self.imageSize[0])  # numpy shape for single channel images
+    # NOTE Image shapes (h, w, 1) and (h, w) are not compatible unless we use keepdims=True for numpy operations
     self.imageTypeInt = np.uint8  # numpy dtype for integer-valued images
     self.imageTypeFloat = np.float32  # numpy dtype for real-valued images
     self.images = dict()
@@ -78,16 +101,10 @@ class VisualSystem(object):
     #   'WK' +White  -Black (currently 'ON')
     #   'KW' +Black  -White (currently 'OFF')
     # NOTE R = L cones, G = M cones, B = S cones
-    # NOTE Image shapes (h, w, 1) and (h, w) are not compatible unless we use keepdims=True for numpy operations
+    self.ganglionTypes = ['ON', 'OFF', 'RG', 'GR', 'RB', 'BR', 'BY', 'YB']
     self.images['Ganglion'] = dict()
-    self.images['Ganglion']['ON'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
-    self.images['Ganglion']['OFF'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
-    self.images['Ganglion']['RG'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
-    self.images['Ganglion']['GR'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
-    self.images['Ganglion']['RB'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
-    self.images['Ganglion']['BR'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
-    self.images['Ganglion']['BY'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
-    self.images['Ganglion']['YB'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
+    for ganglionType in self.ganglionTypes:
+      self.images['Ganglion'][ganglionType] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
     
     # ** Combined response (salience) image
     self.images['Salience'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
@@ -96,13 +113,6 @@ class VisualSystem(object):
     #self.image['Attention'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
     #cv2.circle(self.image['Attention'], self.imageCenter, self.imageSize[0] / 3, 1.0, cv.CV_FILLED)
     #self.image['Attention'] = cv2.blur(self.image['Attention'], (self.imageSize[0] / 4, self.imageSize[0] / 4))  # coarse blur
-    
-    # ** Output image(s)
-    if self.context.options.gui:
-      #self.imageOut = np.zeros(self.imageShapeC3, dtype=self.imageTypeInt)
-      # TODO Salience and selection output will be for each feature pathway
-      self.imageSalienceOut = np.zeros(self.imageShapeC1, dtype=self.imageTypeInt)  # salience neuron outputs
-      self.imageSelectionOut = np.zeros(self.imageShapeC1, dtype=self.imageTypeInt)  # selection neuron outputs
     
     # * Image processing elements
     self.bipolarBlurSize = (5, 5)  # size of blurring kernel used when computing Bipolar cell response
@@ -132,28 +142,43 @@ class VisualSystem(object):
     self.createRetina()
     
     # ** Layers in the Visual Cortex (TODO move this to a separate VisualCortex class?)
-    self.createVisualCortex()
+    self.createVisualCortex()  # creates and populates self.featurePathways
+    
+    # * Output image and plots
+    if self.context.options.gui:
+      #self.imageOut = np.zeros(self.imageShapeC3, dtype=self.imageTypeInt)
+      # TODO Salience and selection output will be for each feature pathway
+      self.imageSalienceOut = np.zeros(self.imageShapeC1, dtype=self.imageTypeInt)  # salience neuron outputs
+      self.imageSelectionOut = np.zeros(self.imageShapeC1, dtype=self.imageTypeInt)  # selection neuron outputs
+      
+      self.neuronPotentialMonitor = NeuronMonitor()
+      for pathwayLabel, featurePathway in self.featurePathways.iteritems():
+        self.neuronPotentialMonitor.addChannel(pathwayLabel, featurePathway.output.neurons[0])  # very hard-coded way to access single output neuron!
+      self.neuronPotentialMonitor.start()
   
   def update(self, timeNow):
     self.timeNow = timeNow
-    self.logger.debug("VisualSystem update @ {}".format(self.timeNow))
+    self.logger.debug("VisualSystem update @ {:.3f}".format(self.timeNow))
     
     # * Get HSV
     self.images['HSV'] = cv2.cvtColor(self.images['BGR'], cv2.COLOR_BGR2HSV)
     self.images['H'], self.images['S'], self.images['V'] = cv2.split(self.images['HSV'])
     
     # * Compute Rod and Cone responses
-    # TODO Need non-linear response to hue, sat, val (less dependent on sat, val for cones)
-    self.imageRod = self.imageTypeFloat(180 - cv2.absdiff(self.images['H'], Rod.rod_type.hue) % 180) * 255 * self.images['V'] * Rod.rod_type.responseFactor  # hack: use constant sat = 200 to make response independent of saturation
+    # TODO: Need non-linear response to hue, sat, val (less dependent on sat, val for cones)
+    # NOTE: Somehow, PhotoreceptorType.hue must be a numpy array, even if it is length 1, otherwise we hit a TypeError: <unknown> is not a numpy array!
+    self.images['Rod'] = self.imageTypeFloat(180 - cv2.absdiff(self.images['H'], Rod.rod_type.hue) % 180) * 255 * self.images['V'] * Rod.rod_type.responseFactor  # hack: use constant sat = 200 to make response independent of saturation
     self.images['Cone']['S'] = self.imageTypeFloat(180 - cv2.absdiff(self.images['H'], Cone.cone_types[0].hue) % 180) * self.images['S'] * self.images['V'] * Cone.cone_types[0].responseFactor
     self.images['Cone']['M'] = self.imageTypeFloat(180 - cv2.absdiff(self.images['H'], Cone.cone_types[1].hue) % 180) * self.images['S'] * self.images['V'] * Cone.cone_types[1].responseFactor
     self.images['Cone']['L'] = self.imageTypeFloat(180 - cv2.absdiff(self.images['H'], Cone.cone_types[2].hue) % 180) * self.images['S'] * self.images['V'] * Cone.cone_types[2].responseFactor
     
     # * Compute Bipolar and Ganglion cell responses
     # ** Blurring is a step that is effectively achieved in biology by horizontal cells
-    imageRodBlurred = cv2.blur(self.imageRod, self.bipolarBlurSize)
-    self.images['Bipolar']['ON'] = np.clip(self.imageRod - 0.75 * imageRodBlurred, 0.0, 1.0)
-    self.images['Bipolar']['OFF'] = np.clip((1.0 - self.imageRod) - 0.75 * (1.0 - imageRodBlurred), 0.0, 1.0)  # same as (1 - ON response)?
+    imageRodBlurred = cv2.blur(self.images['Rod'], self.bipolarBlurSize)
+    self.images['Bipolar']['ON'] = np.clip(self.images['Rod'] - 0.75 * imageRodBlurred, 0.0, 1.0)
+    self.images['Bipolar']['OFF'] = np.clip((1.0 - self.images['Rod']) - 0.75 * (1.0 - imageRodBlurred), 0.0, 1.0)  # same as (1 - ON response)?
+    
+    # TODO Add multiscale Cone Bipolars to prevent unwanted response to diffuse illumination (also, Rod bipolars are ON-center only, so we don't need the OFF channel)
     #imagesConeSBlurred = cv2.blur(self.images['Cone']['S'], self.bipolarBlurSize)
     #imagesConeMBlurred = cv2.blur(self.images['Cone']['M'], self.bipolarBlurSize)
     #imagesConeLBlurred = cv2.blur(self.images['Cone']['L'], self.bipolarBlurSize)
@@ -170,14 +195,8 @@ class VisualSystem(object):
     #self.images['Ganglion']['OFF'] = np.clip(cv2.filter2D(self.images['Bipolar']['OFF'], -1, self.ganglionCenterSurroundKernel), 0.0, 1.0)
     
     # *** Method 3: Multi-level Center-Surround kernels, taking maximum
-    self.images['Ganglion']['ON'].fill(0.0)
-    self.images['Ganglion']['OFF'].fill(0.0)
-    self.images['Ganglion']['RG'].fill(0.0)
-    self.images['Ganglion']['GR'].fill(0.0)
-    self.images['Ganglion']['RB'].fill(0.0)
-    self.images['Ganglion']['BR'].fill(0.0)
-    self.images['Ganglion']['BY'].fill(0.0)
-    self.images['Ganglion']['YB'].fill(0.0)
+    for ganglionImage in self.images['Ganglion'].itervalues():
+      ganglionImage.fill(0.0)  # reset all to zero
     for k in self.ganglionKernels:
       # Rod pathway
       self.images['Ganglion']['ON'] = np.maximum(self.images['Ganglion']['ON'], np.clip(cv2.filter2D(self.images['Bipolar']['ON'], -1, k), 0.0, 1.0))
@@ -196,10 +215,71 @@ class VisualSystem(object):
     # * Compute combined (salience) image; TODO incorporate attention weighting (spatial, as well as by visual feature)
     # ** Method 1: Max of all Ganglion cell images
     self.images['Salience'].fill(0.0)
-    for ganglionType, ganglionImage in self.images['Ganglion'].iteritems():
+    for _, ganglionImage in self.images['Ganglion'].iteritems():
       self.images['Salience'] = np.maximum(self.images['Salience'], ganglionImage)
     
     #self.images['Salience'] *= self.image['Attention']  # TODO evaluate if this is necessary
+    
+    # * Compute features along each pathway
+    for pathwayLabel, featurePathway in self.featurePathways.iteritems():
+      if featurePathway.active:  # TODO implement adaptive sampling for feature pathway updates as well
+        # ** Update feature pathway populations (TODO find a more reliable way of grabbing salience and selection neuron populations)
+        #featurePathway.update(self.timeNow)  # currently doesn't do anything, update populations explicitly
+        salienceNeurons = featurePathway.populations[0]
+        selectionNeurons = featurePathway.populations[1]
+        featureNeurons = featurePathway.populations[2]
+        # *** Salience neurons
+        for salienceNeuron in salienceNeurons.neurons:
+          salienceNeuron.update(timeNow)  # update every iteration
+          #salienceNeuron.updateWithP(timeNow)  # update probabilistically
+          #self.logger.debug("{} Salience neuron potential: {:.3f}, response: {:.3f}, I_e: {}, pixelValue: {}".format(pathwayLabel, salienceNeuron.potential, salienceNeuron.response, salienceNeuron.I_e, salienceNeuron.pixelValue))
+          
+        # *** Selection neurons (TODO mostly duplicated code, perhaps generalizable?)
+        for selectionNeuron in selectionNeurons.neurons:
+          selectionNeuron.update(timeNow)  # update every iteration
+          #selectionNeuron.updateWithP(timeNow)  # update probabilistically
+          #self.logger.debug("{} Selection neuron potential: {:.3f}, pixelValue: {}".format(pathwayLabel, selectionNeuron.potential, selectionNeuron.pixelValue))
+        
+        # **** Pick one selection neuron, inhibit others
+        # TODO Use a top-level feature neuron with graded potential to return activation level
+        #numUninhibited = 0  # [debug]
+        for selectionNeuron in selectionNeurons.neurons:
+          # Render selection neuron's position with response-based pixel value (TODO build receptive field when synapses are made, or later, using a stimulus test phase?)
+          #if selectionNeuron.pixelValue > 200: print "[{:.2f}] {}".format(timeNow, selectionNeuron)  # [debug]
+          if not selectionNeuron.isInhibited:  # no point drawing black circles for inhibited neurons
+            #numUninhibited += 1  # [debug]
+            #cv2.circle(self.imageSelectionOut, (selectionNeuron.pixel[0], selectionNeuron.pixel[1]), self.imageSize[0] / 20, selectionNeuron.pixelValue, cv.CV_FILLED)  # only render the one selected neuron, later
+            featurePathway.selectedNeuron = selectionNeuron
+            featurePathway.selectedTime = timeNow
+            featurePathway.selectedNeuron.inhibit(timeNow, neuron_inhibition_period + 0.75)  # inhibit selected neuron for a bit longer
+            break  # first uninhibited SelectionNeuron will be our selected neuron
+        #print "# Uninhibited selection neurons: {}".format(numUninhibited)  # [debug]
+        
+        # *** Feature neuron
+        for featureNeuron in featureNeurons.neurons:
+          featureNeuron.update(timeNow)  # update every iteration
+          #featureNeuron.updateWithP(timeNow)  # update probabilistically
+          #self.logger.debug("{} Feature neuron potential: {:.3f}, pixelValue: {}".format(pathwayLabel, featureNeuron.potential, featureNeuron.pixelValue))
+        
+        # ** Render output images and show them
+        if self.context.options.gui:
+          # *** Salience neurons
+          self.imageSalienceOut.fill(0.0)
+          for salienceNeuron in salienceNeurons.neurons:
+            # Render salience neuron's receptive field with response-based pixel value (TODO cache int radii and pixel as tuple?)
+            cv2.circle(self.imageSalienceOut, (salienceNeuron.pixel[0], salienceNeuron.pixel[1]), np.int_(salienceNeuron.rfRadius), 128)
+            cv2.circle(self.imageSalienceOut, (salienceNeuron.pixel[0], salienceNeuron.pixel[1]), np.int_(salienceNeuron.rfCenterRadius), salienceNeuron.pixelValue, cv.CV_FILLED)
+          cv2.imshow("{} Salience".format(pathwayLabel), self.imageSalienceOut)
+          
+          # *** Selection neurons (TODO gather representative receptive field from source connections and cache it for use here, instead of using constant size?)
+          #self.imageSelectionOut.fill(0.0)
+          #cv2.circle(self.imageSelectionOut, (featurePathway.selectedNeuron.pixel[0], featurePathway.selectedNeuron.pixel[1]), self.imageSize[0] / 20, int(255 * exp(featurePathway.selectedTime - timeNow)), cv.CV_FILLED)  # draw selected neuron with a shade that fades with time (TODO more accurate receptive field?)
+          #cv2.imshow("{} Selection".format(pathwayLabel), self.imageSelectionOut)
+          
+          # *** TODO Plot feature neuron potential
+          
+    # ** TODO Final output image
+    #self.imageOut = cv2.bitwise_and(self.retina.imageBGR, self.retina.imageBGR, mask=self.imageSelectionOut)
     
     # * TODO Compute feature vector of attended region
     
@@ -221,6 +301,11 @@ class VisualSystem(object):
       self.imageOut = self.images['Salience']
       #_, self.imageOut = cv2.threshold(self.imageOut, 0.15, 1.0, cv2.THRESH_TOZERO)  # apply threshold to remove low-response regions
   
+  def stop(self):
+    # TODO Ensure this gets called for proper clean-up, esp. now that we are using an animated plot
+    if self.context.options.gui:
+      self.neuronPotentialMonitor.stop()
+  
   def createRetina(self):
     # TODO * Create Photoreceptor layer
     # TODO * Create BipolarCell layer
@@ -228,36 +313,47 @@ class VisualSystem(object):
     pass
   
   def createVisualCortex(self):
-    # * TODO Create several feature pathways, each with a salience and selection layer
-    # ** Salience neurons (TODO introduce magno and parvo types)
-    self.salienceLayerBounds = np.float32([[0.0, 0.0, 0.0], [self.imageSize[0] - 1, self.imageSize[1] - 1, 0.0]])
-    #self.salienceNeuronDistribution = MultivariateNormal(mu=self.center, cov=(np.float32([self.center[0] ** 2, self.center[0] ** 2, 1.0]) * np.identity(3, dtype=np.float32)))
-    self.salienceNeuronDistribution = MultivariateUniform(lows=[0.0, 0.0, 0.0], highs=[self.imageSize[1], self.imageSize[0], 0.0])
-    self.salienceNeurons = Population(numNeurons=self.num_salience_neurons, timeNow=self.timeNow, neuronTypes=[SalienceNeuron], bounds=self.salienceLayerBounds, distribution=self.salienceNeuronDistribution, retina=self)
-    self.salienceNeuronPlotColor = 'coral'
-    
-    # ** Selection neurons
-    self.selectionLayerBounds = np.float32([[0.0, 0.0, 50.0], [self.imageSize[0] - 1, self.imageSize[1] - 1, 50.0]])
-    self.selectionNeuronDistribution = MultivariateUniform(lows=[0.0, 0.0, 50.0], highs=[self.imageSize[1], self.imageSize[0], 50.0])
-    self.selectionNeurons = Population(numNeurons=self.num_selection_neurons, timeNow=self.timeNow, neuronTypes=[SelectionNeuron], bounds=self.selectionLayerBounds, distribution=self.selectionNeuronDistribution, retina=self)
-    self.selectionNeuronPlotColor = 'olive'
-    
-    # * Connect neuron layers
-    # ** Salience neurons to selection neurons
-    self.salienceNeurons.connectWith(self.selectionNeurons, maxConnectionsPerNeuron=5)
-    
-    # ** Selection neurons to themselves (lateral inhibition; TODO make this a re-entrant inhibitory Projection with allow_self_connections=False?)
-    for source in self.selectionNeurons.neurons:
-      for target in self.selectionNeurons.neurons:
-        if source == target: continue
-        source.gateNeuron(target)
-    
-    # * Show neuron layers and connections [debug]
-    #plotPopulations([self.salienceNeurons, self.selectionNeurons], populationColors=[self.salienceNeuronPlotColor, self.selectionNeuronPlotColor], showConnections=True, equalScaleZ=True)  # [debug]
-    
-    # * Top-level interface (TODO replicate for each feature pathway; add neuron response/spike frequency as measure of strength)
-    self.selectedNeuron = None  # the last selected SelectionNeuron, mainly for display and top-level output
-    self.selectedTime = 0.0  # corresponding timestamp
+    # * Create several feature pathways, each with a salience and selection layer
+    self.featurePathways = dict()
+    for pathwayLabel in self.images['Ganglion'].iterkeys():  # Ganglion cells are the source of each low-level visual pathway
+      self.logger.info("Creating '{}' feature pathway".format(pathwayLabel))
+      # ** Salience neurons (TODO introduce magno and parvo types; expose layer parameters such as Z-axis position)
+      salienceLayerBounds = np.float32([[0.0, 0.0, 0.0], [self.imageSize[0] - 1, self.imageSize[1] - 1, 0.0]])
+      #salienceNeuronDistribution = MultivariateNormal(mu=self.center, cov=(np.float32([self.center[0] ** 2, self.center[0] ** 2, 1.0]) * np.identity(3, dtype=np.float32)))
+      salienceNeuronDistribution = MultivariateUniform(lows=[0.0, 0.0, 0.0], highs=[self.imageSize[0], self.imageSize[1], 0.0])
+      salienceNeurons = Population(numNeurons=self.num_salience_neurons, timeNow=self.timeNow, neuronTypes=[SalienceNeuron], bounds=salienceLayerBounds, distribution=salienceNeuronDistribution, system=self, pathway=pathwayLabel, imageSet=self.images['Ganglion'])
+      # TODO self.addPopulation(salienceNeurons)?
+      
+      # ** Selection neurons
+      selectionLayerBounds = np.float32([[0.0, 0.0, 50.0], [self.imageSize[0] - 1, self.imageSize[1] - 1, 50.0]])
+      selectionNeuronDistribution = MultivariateUniform(lows=[0.0, 0.0, 50.0], highs=[self.imageSize[0], self.imageSize[1], 50.0])
+      selectionNeurons = Population(numNeurons=self.num_selection_neurons, timeNow=self.timeNow, neuronTypes=[SelectionNeuron], bounds=selectionLayerBounds, distribution=selectionNeuronDistribution, system=self, pathway=pathwayLabel)
+      # TODO self.addPopulation(selectionNeurons)?
+      
+      # ** Feature neurons (usually a single neuron for most non spatially-sensitive features)
+      featureLayerBounds = np.float32([[0.0, 0.0, 100.0], [self.imageSize[0] - 1, self.imageSize[1] - 1, 100.0]])
+      featureNeurons = Population(numNeurons=1, timeNow=self.timeNow, neuronTypes=[FeatureNeuron], bounds=featureLayerBounds, neuronLocations=np.float32([[self.imageCenter[0], self.imageCenter[1], 100.0]]), system=self, pathway=pathwayLabel)  # effectively a single point in space is what we need for location
+      
+      # * Connect neuron layers
+      # ** Salience neurons to selection neurons (TODO use createProjection() once Projection is implemented, and register using self.addProjection)
+      salienceNeurons.connectWith(selectionNeurons, maxConnectionsPerNeuron=5)
+      
+      # ** Selection neurons to feature neurons (all-to-all)
+      for source in selectionNeurons.neurons:
+        for target in featureNeurons.neurons:
+          source.synapseWith(target)
+      
+      # ** Selection neurons to themselves (lateral inhibition; TODO make this a re-entrant inhibitory Projection with allow_self_connections=False?)
+      for source in selectionNeurons.neurons:
+        for target in selectionNeurons.neurons:
+          if source == target: continue
+          source.gateNeuron(target)
+      
+      # * Show neuron layers and connections [debug]
+      #plotPopulations([salienceNeurons, selectionNeurons], populationColors=['coral', 'olive'], showConnections=True, equalScaleZ=True)  # [debug]
+      
+      # ** Add to dictionary of feature pathways
+      self.featurePathways[pathwayLabel] = VisualFeaturePathway(pathwayLabel, [salienceNeurons, selectionNeurons, featureNeurons], None, featureNeurons, self.timeNow)
   
   def createPopulation(self, *args, **kwargs):
     """Create a basic Population with given arguments."""
@@ -281,14 +377,14 @@ class VisualSystem(object):
 
 
 class VisionManager(SimplifiedProjector):
-  """A version of Projector that uses a simplified Retina."""
+  """A version of Projector that uses a simplified Retina and layers from the visual cortex for visual processing."""
   
   def __init__(self, retina=None):
     SimplifiedProjector.__init__(self, retina if retina is not None else VisualSystem())
 
 
 def test_VisualSystem():
-  # Test the visual system, as generated
+  # Test the end-to-end visual system
   Context.createInstance()
   run(VisionManager, description="Test application that uses a SimplifiedProjector to run image input through a VisualSystem instance.")
 

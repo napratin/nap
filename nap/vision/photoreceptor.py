@@ -121,7 +121,7 @@ class PhotoreceptorType:
     self.name = name
     self.freqResponse = freqResponse
     self.hueResponse = Normal(mu=freqToHue(self.freqResponse.mu), sigma=freqToHue(self.freqResponse.sigma, rel=True))
-    self.hue = int(self.hueResponse.mu)  # frequently used (subtracted from uint8 image)
+    self.hue = np.uint8([self.hueResponse.mu])  # frequently used (subtracted from uint8 image)
     self.hueSensitivity = hueSensitivity
     self.satSensitivity = satSensitivity
     self.valSensitivity = valSensitivity

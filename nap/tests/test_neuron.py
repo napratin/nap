@@ -2,7 +2,7 @@ from time import time, sleep
 from unittest import TestCase
 import numpy as np
 
-from nap.neuron import Neuron, threshold_potential, action_potential_peak, action_potential_trough, synaptic_strength
+from nap.neuron import Neuron, threshold_potential, action_potential_peak, action_potential_trough, synaptic_strength, setup_neuron_plot
 
 from matplotlib.pyplot import figure, plot, subplot, subplots_adjust, draw, pause, hold, show, xlim, ylim, title, xlabel, ylabel, axhline
 import matplotlib as mpl
@@ -22,16 +22,6 @@ class TestNeuron(TestCase):
   def tearDown(self):
     pass
   
-  def setup_neuron_plot(self, plotTitle="Neuron", xlab="Time (s)", ylab="Membrane potential (V)"):
-    if plotTitle is not None: title(plotTitle)
-    if xlab is not None: xlabel(xlab)
-    if ylab is not None: ylabel(ylab)
-    
-    axhline(y = Neuron.resting_potential.mu, color = 'k', linestyle = '--')
-    axhline(y = threshold_potential, color = 'r', linestyle = '--')
-    axhline(y = action_potential_peak, color = 'c', linestyle = '--')
-    axhline(y = action_potential_trough.mu, color = 'm', linestyle = '--')
-  
   def test_single(self, duration=10.0, delay=0.01):
     startTime = time()
     timeNow = 0.0
@@ -42,7 +32,7 @@ class TestNeuron(TestCase):
     hold(True)  # [graph]
     xlim(0.0, duration)  # [graph]
     ylim(action_potential_trough.mu - 0.01, action_potential_peak + 0.02)  # [graph]
-    self.setup_neuron_plot("Stimulated neuron", None, "Membrane potential (V)")
+    setup_neuron_plot("Stimulated neuron", None, "Membrane potential (V)")
     
     while timeNow <= duration:
       timeNow = time() - startTime
@@ -74,11 +64,11 @@ class TestNeuron(TestCase):
     subplot(211)  # [graph]
     xlim(0.0, total_duration)  # [graph]
     ylim(action_potential_trough.mu - 0.01, action_potential_peak + 0.02)  # [graph]
-    self.setup_neuron_plot("Presynaptic neuron", None, "Membrane potential (V)")
+    setup_neuron_plot("Presynaptic neuron", None, "Membrane potential (V)")
     subplot(212)  # [graph]
     xlim(0.0, total_duration)  # [graph]
     ylim(action_potential_trough.mu - 0.01, action_potential_peak + 0.02)  # [graph]
-    self.setup_neuron_plot("Postsynaptic neuron", "Time (s)", "Membrane potential (V)")
+    setup_neuron_plot("Postsynaptic neuron", "Time (s)", "Membrane potential (V)")
     subplots_adjust(hspace = 0.33)
     
     while timeNow <= total_duration:
@@ -116,17 +106,17 @@ class TestNeuron(TestCase):
     ax = subplot(311)  # [graph]
     xlim(0.0, total_duration)  # [graph]
     ylim(action_potential_trough.mu - 0.01, action_potential_peak + 0.01)  # [graph]
-    self.setup_neuron_plot("Presynaptic neuron", None, None)
+    setup_neuron_plot("Presynaptic neuron", None, None)
     ax.get_xaxis().set_ticklabels([])
     ax = subplot(312)  # [graph]
     xlim(0.0, total_duration)  # [graph]
     ylim(action_potential_trough.mu - 0.01, action_potential_peak + 0.01)  # [graph]
-    self.setup_neuron_plot("Postsynaptic neuron", None, "Membrane potential (V)")
+    setup_neuron_plot("Postsynaptic neuron", None, "Membrane potential (V)")
     ax.get_xaxis().set_ticklabels([])
     subplot(313)  # [graph]
     xlim(0.0, total_duration)  # [graph]
     ylim(action_potential_trough.mu - 0.01, action_potential_peak + 0.01)  # [graph]
-    self.setup_neuron_plot("Gatekeeper neuron", "Time (s)", None)
+    setup_neuron_plot("Gatekeeper neuron", "Time (s)", None)
     subplots_adjust(hspace = 0.33)
     
     while timeNow <= total_duration:
@@ -173,15 +163,15 @@ class TestNeuron(TestCase):
     subplot(311)  # [graph]
     xlim(0.0, total_duration)  # [graph]
     ylim(action_potential_trough.mu - 0.01, action_potential_peak + 0.01)  # [graph]
-    self.setup_neuron_plot("Neuron " + str(n1.id))
+    setup_neuron_plot("Neuron " + str(n1.id))
     subplot(312)  # [graph]
     xlim(0.0, total_duration)  # [graph]
     ylim(action_potential_trough.mu - 0.01, action_potential_peak + 0.01)  # [graph]
-    self.setup_neuron_plot("Neuron " + str(n2.id))
+    setup_neuron_plot("Neuron " + str(n2.id))
     subplot(313)  # [graph]
     xlim(0.0, total_duration)  # [graph]
     ylim(action_potential_trough.mu - 0.01, action_potential_peak + 0.01)  # [graph]
-    self.setup_neuron_plot("Neuron " + str(i1.id) + " (inhibitor)")
+    setup_neuron_plot("Neuron " + str(i1.id) + " (inhibitor)")
     subplots_adjust(hspace = 0.33)
     
     while timeNow <= total_duration:
