@@ -9,6 +9,7 @@ import numpy as np
 import cv2
 
 from matplotlib.pyplot import figure, plot, axis, show, subplots_adjust, title, xlabel, ylabel, axhline
+from matplotlib import cm
 from mpl_toolkits.mplot3d import Axes3D
 
 from .util.quadtree import Rect, QuadTree
@@ -37,7 +38,9 @@ synapse_inhibition_period = 0.5  # secs.; duration for which the effect of inhib
 neuron_inhibition_period = 1.25  #  secs.; duration for which the effect of inhibition lasts in a neuron
 
 # Graph parameters
-plot_colors = 'bgrcmy'
+neuron_plot_colors = 'bgrcmy'
+population_plot_colors = cm.jet(np.random.uniform(0.0, 1.0, 10))  #['darkblue', 'darkgreen', 'darkred', 'darkmagenta', 'olive', 'coral', ]  # TODO find a better color-map
+inhibitory_connection_color = 'red'
 
 
 class GrowthCone:
@@ -141,7 +144,8 @@ class Neuron(object):
     
     self.timeLastPlotted = self.timeCurrent  # [graph]
     self.potentialLastPlotted = self.potential  # [graph]
-    self.plotColor = plot_colors[self.id % len(plot_colors)]  # [graph]
+    self.plotColor = neuron_plot_colors[self.id % len(neuron_plot_colors)]  # [graph]
+    self.inhibitoryConnectionColor = inhibitory_connection_color  # [graph]
   
   def synapseWith(self, neuron, strength=None, gatekeeper=None):
     s = Synapse(self, neuron, strength, gatekeeper)
@@ -257,7 +261,12 @@ class Population(object):
   default_bounds = np.float32([[-50.0, -50.0, -5.0], [50.0, 50.0, 5.0]])
   default_distribution = MultivariateNormal(mu=np.float32([0.0, 0.0, 0.0]), cov=(np.float32([400, 400, 4]) * np.identity(3, dtype=np.float32)))
   
+  id_ctr = 0  # auto-incremented counter to assign unique IDs to instances
+  
   def __init__(self, numNeurons=1000, timeNow=0.0, neuronTypes=[Neuron], bounds=default_bounds, neuronLocations=None, distribution=default_distribution, **kwargs):
+    self.id = Population.id_ctr
+    Population.id_ctr += 1
+    
     self.numNeurons = numNeurons
     self.timeNow = timeNow
     self.neuronTypes = neuronTypes
@@ -265,6 +274,8 @@ class Population(object):
     self.center = (self.bounds[0] + self.bounds[1]) / 2
     self.distribution = distribution
     self.isConnected = False
+    self.plotColor = population_plot_colors[self.id % len(population_plot_colors)]  # [graph]
+    self.inhibitoryConnectionColor = inhibitory_connection_color  # [graph]
     
     self.logger = logging.getLogger(__name__)
     self.logger.info("Creating {}".format(self))
@@ -365,21 +376,26 @@ class Population(object):
     self.logger.debug("Pre: {}, post: {}, #synapses: {}, (avg.: {} per pre-neuron), #disconnected: {}".format(len(self.neurons), len(population.neurons), self.numSynapses, float(self.numSynapses) / len(self.neurons), self.numDisconnectedNeurons))
     self.isConnected = True
   
-  def plotNeuronLocations3D(self, ax=None, showConnections=True, populationColor=None, connectionColor=None, equalScaleZ=False):
+  def plotNeuronLocations3D(self, ax=None, showConnections=True, showInhibitoryConnections=False, populationColor=None, connectionColor=None, inhibitoryConnectionColor=None, equalScaleZ=False):
     standalone = False
     if ax is None:
       standalone = True
       fig = figure()
       ax = fig.gca(projection='3d')
     
+    self.logger.debug("Population {}: showConnections: {}, showInhibitoryConnections: {}, populationColor: {}, connectionColor: {}, inhibitoryConnectionColor: {}".format(self.id, showConnections, showInhibitoryConnections, populationColor, connectionColor, inhibitoryConnectionColor))
     ax.scatter(self.neuronLocations[:,0], self.neuronLocations[:,1], self.neuronLocations[:,2], c=(self.neuronPlotColors if populationColor is None else populationColor))
     if showConnections and self.isConnected:
       for n in self.neurons:
         #frm = n.location
         #to = n.location + self.growthCone.maxLength * self.growthCone.direction
         #ax.plot((frm[0], to[0]), (frm[1], to[1]), (frm[2], to[2]))  # [debug: draw growth cone vector]
+        #print "Population.plotNeuronLocations3D(): {} {} @ ({:.2f}, {:.2f}): {} synapses, {} gated neurons".format(n.__class__.__name__, n.id, n.location[0], n.location[0], len(n.synapses), len(n.gatedNeurons))  # [debug]
         for s in n.synapses:
-          ax.plot((n.location[0], s.post.location[0]), (n.location[1], s.post.location[1]), (n.location[2], s.post.location[2]), c=(n.plotColor if connectionColor is None else connectionColor))
+          ax.plot((n.location[0], s.post.location[0]), (n.location[1], s.post.location[1]), (n.location[2], s.post.location[2]), c=(n.plotColor if connectionColor is None else connectionColor), alpha=0.75)
+        if showInhibitoryConnections:  # TODO also add gatedSynapses, if being used in framework
+          for t in n.gatedNeurons:
+            ax.plot((n.location[0], t.location[0]), (n.location[1], t.location[1]), (n.location[2], t.location[2]), c=(n.inhibitoryConnectionColor if inhibitoryConnectionColor is None else inhibitoryConnectionColor), alpha=0.75)
     
     if standalone:  # TODO prevent code duplication
       plot_bounds = self.bounds
@@ -399,10 +415,10 @@ class Population(object):
       show()
   
   def __str__(self):
-    return "Population: {{ numNeurons: {}, neuronTypes: [{}] }}".format(self.numNeurons, ", ".join(t.__name__ for t in self.neuronTypes))
+    return "Population {}: {{ numNeurons: {}, neuronTypes: [{}] }}".format(self.id, self.numNeurons, ", ".join(t.__name__ for t in self.neuronTypes))
   
   def __repr__(self):
-    return "Population: {{ numNeurons: {}, neuronTypes: [{}], bounds: {}, distribution: {} }}".format(self.numNeurons, ", ".join(t.__name__ for t in self.neuronTypes), repr(self.bounds), self.distribution)
+    return "Population {}: {{ numNeurons: {}, neuronTypes: [{}], bounds: {}, distribution: {} }}".format(self.id, self.numNeurons, ", ".join(t.__name__ for t in self.neuronTypes), repr(self.bounds), self.distribution)
 
 
 class Projection(object):
@@ -410,21 +426,25 @@ class Projection(object):
   pass  # TODO Implement this class by pulling out connection-related methods from Population
 
 
-def plotPopulations(populations, populationColors=None, showConnections=True, connectionColors=None, equalScaleZ=False):
-  if populationColors == None:
-    populationColors = [None] * len(populations)
-  if connectionColors == None:
-    connectionColors = [None] * len(populations)
+def plotPopulations(populations, populationColors=None, showConnections=True, showInhibitoryConnections=False, connectionColors=None, inhibitoryConnectionColors=None, equalScaleZ=False):
+  if populationColors is None:
+    populationColors = [p.plotColor for p in populations]
+  if showConnections:
+    if connectionColors is None:
+      connectionColors = [p.plotColor for p in populations]  # same as plotColor
+    if inhibitoryConnectionColors is None:
+      inhibitoryConnectionColors = [p.inhibitoryConnectionColor for p in populations]
   
   fig = figure()
   ax = fig.gca(projection='3d')  # effectively same as fig.add_subplot(111, projection='3d')
   
   plot_bounds = np.float32([np.repeat(np.inf, 3), np.repeat(-np.inf, 3)])
-  for population, populationColor, connectionColor in zip(populations, populationColors, connectionColors):
-    population.plotNeuronLocations3D(ax, showConnections=showConnections, populationColor=populationColor, connectionColor=connectionColor)
+  for population, populationColor, connectionColor, inhibitoryConnectionColor in zip(populations, populationColors, connectionColors, inhibitoryConnectionColors):
+    population.plotNeuronLocations3D(ax, showConnections=showConnections, showInhibitoryConnections=showInhibitoryConnections, populationColor=populationColor, connectionColor=connectionColor, inhibitoryConnectionColor=inhibitoryConnectionColor)
     plot_bounds[0, :] = np.minimum(plot_bounds[0], population.bounds[0])
     plot_bounds[1, :] = np.maximum(plot_bounds[1], population.bounds[1])
   
+  # Use aggregate bounds from all populations to size up the plot
   plot_sizes = (plot_bounds[1] - plot_bounds[0])
   max_plot_size = max(plot_sizes)
   plot_centers = (plot_bounds[0] + plot_bounds[1]) / 2

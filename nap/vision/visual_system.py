@@ -10,7 +10,7 @@ import cv2.cv as cv
 from lumos.context import Context
 from lumos.input import InputDevice, run
 
-from ..neuron import Neuron, Population, Projection, neuron_inhibition_period, Uniform, MultivariateUniform, NeuronMonitor
+from ..neuron import Neuron, Population, Projection, neuron_inhibition_period, Uniform, MultivariateUniform, NeuronMonitor, plotPopulations
 from .photoreceptor import Rod, Cone
 from .simplified.retina import SimplifiedProjector
 from .simplified.visual_cortex import SalienceNeuron, SelectionNeuron, FeatureNeuron
@@ -317,44 +317,47 @@ class VisualSystem(object):
     self.featurePathways = dict()
     for pathwayLabel in self.images['Ganglion'].iterkeys():  # Ganglion cells are the source of each low-level visual pathway
       self.logger.info("Creating '{}' feature pathway".format(pathwayLabel))
-      # ** Salience neurons (TODO introduce magno and parvo types; expose layer parameters such as Z-axis position)
+      # ** Create layers
+      # *** Salience neurons (TODO introduce magno and parvo types; expose layer parameters such as Z-axis position)
       salienceLayerBounds = np.float32([[0.0, 0.0, 0.0], [self.imageSize[0] - 1, self.imageSize[1] - 1, 0.0]])
       #salienceNeuronDistribution = MultivariateNormal(mu=self.center, cov=(np.float32([self.center[0] ** 2, self.center[0] ** 2, 1.0]) * np.identity(3, dtype=np.float32)))
       salienceNeuronDistribution = MultivariateUniform(lows=[0.0, 0.0, 0.0], highs=[self.imageSize[0], self.imageSize[1], 0.0])
       salienceNeurons = Population(numNeurons=self.num_salience_neurons, timeNow=self.timeNow, neuronTypes=[SalienceNeuron], bounds=salienceLayerBounds, distribution=salienceNeuronDistribution, system=self, pathway=pathwayLabel, imageSet=self.images['Ganglion'])
       # TODO self.addPopulation(salienceNeurons)?
       
-      # ** Selection neurons
+      # *** Selection neurons
       selectionLayerBounds = np.float32([[0.0, 0.0, 50.0], [self.imageSize[0] - 1, self.imageSize[1] - 1, 50.0]])
       selectionNeuronDistribution = MultivariateUniform(lows=[0.0, 0.0, 50.0], highs=[self.imageSize[0], self.imageSize[1], 50.0])
       selectionNeurons = Population(numNeurons=self.num_selection_neurons, timeNow=self.timeNow, neuronTypes=[SelectionNeuron], bounds=selectionLayerBounds, distribution=selectionNeuronDistribution, system=self, pathway=pathwayLabel)
       # TODO self.addPopulation(selectionNeurons)?
       
-      # ** Feature neurons (usually a single neuron for most non spatially-sensitive features)
+      # *** Feature neurons (usually a single neuron for most non spatially-sensitive features)
       featureLayerBounds = np.float32([[0.0, 0.0, 100.0], [self.imageSize[0] - 1, self.imageSize[1] - 1, 100.0]])
       featureNeurons = Population(numNeurons=1, timeNow=self.timeNow, neuronTypes=[FeatureNeuron], bounds=featureLayerBounds, neuronLocations=np.float32([[self.imageCenter[0], self.imageCenter[1], 100.0]]), system=self, pathway=pathwayLabel)  # effectively a single point in space is what we need for location
+      # TODO Set feature neuron plotColor to something more representative of the pathway
       
-      # * Connect neuron layers
-      # ** Salience neurons to selection neurons (TODO use createProjection() once Projection is implemented, and register using self.addProjection)
+      # ** Connect neuron layers
+      # *** Salience neurons to selection neurons (TODO use createProjection() once Projection is implemented, and register using self.addProjection)
       salienceNeurons.connectWith(selectionNeurons, maxConnectionsPerNeuron=5)
       
-      # ** Selection neurons to feature neurons (all-to-all)
+      # *** Selection neurons to feature neurons (all-to-all)
       for source in selectionNeurons.neurons:
         for target in featureNeurons.neurons:
           source.synapseWith(target)
+      selectionNeurons.isConnected = True  # NOTE need to explicitly do this since we're not using Population.connectWith()
       
-      # ** Selection neurons to themselves (lateral inhibition; TODO make this a re-entrant inhibitory Projection with allow_self_connections=False?)
+      # *** Selection neurons to themselves (lateral inhibition; TODO make this a re-entrant inhibitory Projection with allow_self_connections=False?)
       for source in selectionNeurons.neurons:
         for target in selectionNeurons.neurons:
           if source == target: continue
           source.gateNeuron(target)
       
-      # * Show neuron layers and connections [debug]
-      #plotPopulations([salienceNeurons, selectionNeurons], populationColors=['coral', 'olive'], showConnections=True, equalScaleZ=True)  # [debug]
-      
       # ** Add to dictionary of feature pathways
       self.featurePathways[pathwayLabel] = VisualFeaturePathway(pathwayLabel, [salienceNeurons, selectionNeurons, featureNeurons], None, featureNeurons, self.timeNow)
   
+      # ** Show neuron layers and connections [debug]
+      #plotPopulations([salienceNeurons, selectionNeurons, featureNeurons], showConnections=True, equalScaleZ=True)  # [debug]
+      
   def createPopulation(self, *args, **kwargs):
     """Create a basic Population with given arguments."""
     return self.addPopulation(Population(*args, **kwargs))
