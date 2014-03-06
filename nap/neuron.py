@@ -277,7 +277,7 @@ class Population(object):
     self.plotColor = population_plot_colors[self.id % len(population_plot_colors)]  # [graph]
     self.inhibitoryConnectionColor = inhibitory_connection_color  # [graph]
     
-    self.logger = logging.getLogger(__name__)
+    self.logger = logging.getLogger(self.__class__.__name__)  # we could use "{}.{}".format(self.__class__.__name__, self.id) instead, but that'll create separate loggers for each Population
     self.logger.info("Creating {}".format(self))
     self.logger.debug("Bounds: x: {}, y: {}, z: {}".format(self.bounds[:,0], self.bounds[:,1], self.bounds[:,2]))
     

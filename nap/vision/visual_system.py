@@ -5,6 +5,7 @@ import logging
 import numpy as np
 import cv2
 import cv2.cv as cv
+from collections import OrderedDict
 
 #import pyNN.neuron as sim
 from lumos.context import Context
@@ -49,10 +50,10 @@ class VisualSystem(object):
   
   default_image_size = (256, 256)  # (width, height)
   
-  def __init__(self, imageSize=default_image_size, timeNow=0.0):
+  def __init__(self, imageSize=default_image_size, timeNow=0.0, showMonitor=True):
     # * Get context and logger
     self.context = Context.getInstance()
-    self.logger = logging.getLogger(__name__)
+    self.logger = logging.getLogger(self.__class__.__name__)
     
     # * Accept arguments, read parameters (TODO)
     self.imageSize = imageSize  # (width, height)
@@ -69,7 +70,7 @@ class VisualSystem(object):
     # NOTE Image shapes (h, w, 1) and (h, w) are not compatible unless we use keepdims=True for numpy operations
     self.imageTypeInt = np.uint8  # numpy dtype for integer-valued images
     self.imageTypeFloat = np.float32  # numpy dtype for real-valued images
-    self.images = dict()
+    self.images = OrderedDict()
     
     # ** RGB and HSV images
     self.images['BGR'] = np.zeros(self.imageShapeC3, dtype=self.imageTypeInt)
@@ -80,13 +81,13 @@ class VisualSystem(object):
     
     # ** Rod and Cone response images (frequency/hue-dependent)
     self.images['Rod'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
-    self.images['Cone'] = dict()  # NOTE dict keys must match names of Cone.cone_types (should this be flattened?)
+    self.images['Cone'] = OrderedDict()  # NOTE dict keys must match names of Cone.cone_types (should this be flattened?)
     self.images['Cone']['S'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
     self.images['Cone']['M'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
     self.images['Cone']['L'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
     
     # ** Bipolar cell response images
-    self.images['Bipolar'] = dict()
+    self.images['Bipolar'] = OrderedDict()
     self.images['Bipolar']['ON'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
     self.images['Bipolar']['OFF'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
     
@@ -102,7 +103,7 @@ class VisualSystem(object):
     #   'KW' +Black  -White (currently 'OFF')
     # NOTE R = L cones, G = M cones, B = S cones
     self.ganglionTypes = ['ON', 'OFF', 'RG', 'GR', 'RB', 'BR', 'BY', 'YB']
-    self.images['Ganglion'] = dict()
+    self.images['Ganglion'] = OrderedDict()
     for ganglionType in self.ganglionTypes:
       self.images['Ganglion'][ganglionType] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
     
@@ -135,8 +136,8 @@ class VisualSystem(object):
     #self.logger.info("Ganglion center-surround kernel sizes ({} levels): {}".format(self.ganglionKernelLevels, ", ".join("{}".format(k.shape) for k in self.ganglionKernels)))  # [debug]
     
     # * Neuron Populations and Projections connecting them
-    self.populations = dict()  # dict with key = population label
-    self.projections = dict()  # mapping from (pre_label, post_label) => projection object
+    self.populations = OrderedDict()  # dict with key = population label
+    self.projections = OrderedDict()  # mapping from (pre_label, post_label) => projection object
     
     # ** Retinal layers (TODO move this to a separate Retina class?)
     self.createRetina()
@@ -151,14 +152,14 @@ class VisualSystem(object):
       self.imageSalienceOut = np.zeros(self.imageShapeC1, dtype=self.imageTypeInt)  # salience neuron outputs
       self.imageSelectionOut = np.zeros(self.imageShapeC1, dtype=self.imageTypeInt)  # selection neuron outputs
       
-      self.neuronPotentialMonitor = NeuronMonitor()
-      for pathwayLabel, featurePathway in self.featurePathways.iteritems():
-        self.neuronPotentialMonitor.addChannel(pathwayLabel, featurePathway.output.neurons[0])  # very hard-coded way to access single output neuron!
-      self.neuronPotentialMonitor.start()
+      if showMonitor:
+        self.neuronPotentialMonitor = NeuronMonitor()
+        for pathwayLabel, featurePathway in self.featurePathways.iteritems():
+          self.neuronPotentialMonitor.addChannel(pathwayLabel, featurePathway.output.neurons[0])  # very hard-coded way to access single output neuron!
+        self.neuronPotentialMonitor.start()
   
   def update(self, timeNow):
     self.timeNow = timeNow
-    self.logger.debug("VisualSystem update @ {:.3f}".format(self.timeNow))
     
     # * Get HSV
     self.images['HSV'] = cv2.cvtColor(self.images['BGR'], cv2.COLOR_BGR2HSV)
@@ -276,12 +277,14 @@ class VisualSystem(object):
           #cv2.circle(self.imageSelectionOut, (featurePathway.selectedNeuron.pixel[0], featurePathway.selectedNeuron.pixel[1]), self.imageSize[0] / 20, int(255 * exp(featurePathway.selectedTime - timeNow)), cv.CV_FILLED)  # draw selected neuron with a shade that fades with time (TODO more accurate receptive field?)
           #cv2.imshow("{} Selection".format(pathwayLabel), self.imageSelectionOut)
           
-          # *** TODO Plot feature neuron potential
+    # * Update feature vector representing current state of neurons
+    self.updateFeatureVector() 
+    self.logger.debug("[{}] Features: {}".format(self.timeNow, self.featureVector))
           
-    # ** TODO Final output image
-    #self.imageOut = cv2.bitwise_and(self.retina.imageBGR, self.retina.imageBGR, mask=self.imageSelectionOut)
-    
     # * TODO Compute feature vector of attended region
+    
+    # * TODO Final output image
+    #self.imageOut = cv2.bitwise_and(self.retina.imageBGR, self.retina.imageBGR, mask=self.imageSelectionOut)
     
     # * Show output images if in GUI mode
     if self.context.options.gui:
@@ -313,9 +316,10 @@ class VisualSystem(object):
     pass
   
   def createVisualCortex(self):
-    # * Create several feature pathways, each with a salience and selection layer
-    self.featurePathways = dict()
-    for pathwayLabel in self.images['Ganglion'].iterkeys():  # Ganglion cells are the source of each low-level visual pathway
+    # * Create several feature pathways, each with a salience, selection and feature layer
+    self.featureLabels = self.images['Ganglion'].keys()  # cached for frequent use (NOTE currently will need to be updated if self.images['Ganglion'] changes)
+    self.featurePathways = OrderedDict()
+    for pathwayLabel in self.featureLabels:  # Ganglion cells are the source of each low-level visual pathway
       self.logger.info("Creating '{}' feature pathway".format(pathwayLabel))
       # ** Create layers
       # *** Salience neurons (TODO introduce magno and parvo types; expose layer parameters such as Z-axis position)
@@ -357,6 +361,14 @@ class VisualSystem(object):
   
       # ** Show neuron layers and connections [debug]
       #plotPopulations([salienceNeurons, selectionNeurons, featureNeurons], showConnections=True, equalScaleZ=True)  # [debug]
+    
+    # * Initialize feature vector
+    self.featureVector = None
+    self.updateFeatureVector()
+  
+  def updateFeatureVector(self):
+    self.featureVector = np.float32([pathway.output.neurons[0].potential for pathway in self.featurePathways.itervalues()])
+    # TODO Also compute mean and variance over a moving window here? (or should that be an agent-level function?)
       
   def createPopulation(self, *args, **kwargs):
     """Create a basic Population with given arguments."""
