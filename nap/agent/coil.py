@@ -3,6 +3,7 @@
 import os
 import logging
 import argparse
+import numpy as np
 
 from lumos.context import Context
 from lumos.util import Enum
@@ -14,9 +15,12 @@ from ..vision.visual_system import VisualSystem, VisionManager
 class COILManager(VisionManager):
   """A visual system manager for processing a single COIL-100 image."""
   
-  State = Enum(('NONE', 'UNSTABLE', 'STABLE', 'DONE'))
-  state_duration_unstable = 5.0  # seconds to spend in unstable state before transitioning (when things become stable)
-  state_duration_stable = 5.0  # seconds to spend in stable state before transitioning (avoid short stability periods)
+  State = Enum(('NONE', 'INCOMPLETE', 'UNSTABLE', 'STABLE'))
+  min_duration_incomplete = 2.0  # min. seconds to spend in incomplete state before transitioning (rolling buffer not full yet/neurons not activated enough)
+  min_duration_unstable = 2.0  # min. seconds to spend in unstable state before transitioning (avoid short stability periods)
+  max_duration_unstable = 5.0  # max. seconds to spend in unstable state before transitioning (avoid being stuck waiting forever for things to stabilize)
+  feature_buffer_size = 10  # number of iterations/samples to compute feature vector statistics over (rolling window)
+  max_feature_sd = 0.005  # max. s.d. (units: Volts) to tolerate in judging a signal as stable
   
   def __init__(self, visualSystem=None):
     self.visualSystem = visualSystem if visualSystem is not None else VisualSystem()  # TODO remove this once VisionManager (or its ancestor caches visualSystem in __init__)
@@ -26,26 +30,44 @@ class COILManager(VisionManager):
   
   def initialize(self, imageIn, timeNow):
     VisionManager.initialize(self, imageIn, timeNow)
+    self.numFeatures = len(self.visualSystem.featureVector)
+    self.featureVectorBuffer = np.zeros((self.feature_buffer_size, self.numFeatures), dtype=np.float32)  # rolling buffer of feature vector samples
+    self.featureVectorIndex = 0  # index into feature vector buffer (count module size)
+    self.featureVectorCount = 0  # no. of feature vector samples collected (same as index, sans modulo)
+    self.featureVectorMean = np.zeros(self.numFeatures, dtype=np.float32)  # column mean of values in buffer
+    self.featureVectorSD = np.zeros(self.numFeatures, dtype=np.float32)  # standard deviation of values in buffer
+    self.transition(self.State.INCOMPLETE, timeNow)
     self.logger.debug("COILManager initialized")
-    self.transition(self.State.UNSTABLE, timeNow)
+    self.logger.info("[{:.2f}] Features: {}".format(timeNow, self.visualSystem.featureLabels))
   
   def process(self, imageIn, timeNow):
     keepRunning, imageOut = VisionManager.process(self, imageIn, timeNow)
     
     # TODO Compute featureVector mean and variance over a moving window
-    #self.visualSystem.featureVector
+    self.featureVectorBuffer[self.featureVectorIndex, :] = self.visualSystem.featureVector
+    self.featureVectorCount += 1
+    self.featureVectorIndex = self.featureVectorCount % self.feature_buffer_size
     
     # TODO Change state according to feature vector values
-    if self.state == self.State.UNSTABLE and (timeNow - self.timeStateChange) > self.state_duration_unstable:
-      self.transition(self.State.STABLE, timeNow)
-    elif self.state == self.State.STABLE and (timeNow - self.timeStateChange) > self.state_duration_stable:
-      self.transition(self.State.DONE, timeNow)
+    deltaTime = timeNow - self.timeStateChange
+    if self.state == self.State.INCOMPLETE and deltaTime > self.min_duration_incomplete and self.featureVectorCount >= self.feature_buffer_size:
+      self.transition(self.State.UNSTABLE, timeNow)
+    elif self.state == self.State.UNSTABLE and deltaTime > self.min_duration_unstable:
+      np.mean(self.featureVectorBuffer, axis=0, dtype=np.float32, out=self.featureVectorMean)
+      np.std(self.featureVectorBuffer, axis=0, dtype=np.float32, out=self.featureVectorSD)
+      self.logger.debug("[{:.2f}] Mean: {}".format(timeNow, self.featureVectorMean))
+      self.logger.debug("[{:.2f}] S.D.: {}".format(timeNow, self.featureVectorSD))
+      if np.max(self.featureVectorSD) < self.max_feature_sd or deltaTime > self.max_duration_unstable:  # TODO use a time-scaled low-pass filtered criteria
+        self.transition(self.State.STABLE, timeNow)
+    elif self.state == self.State.STABLE:
+      self.logger.info("[Final] Mean: {}".format(self.featureVectorMean))
+      self.logger.info("[Final] S.D.: {}".format(self.featureVectorSD))
       return False, imageOut  # Return False when done
     
     return keepRunning, imageOut
   
   def transition(self, next_state, timeNow):
-    self.logger.debug("[{:.2f}] Transitioning from {} to {} state".format(timeNow, self.State.toString(self.state), self.State.toString(next_state)))
+    self.logger.debug("[{:.2f}] Transitioning from {} to {} state after {:.2f}s".format(timeNow, self.State.toString(self.state), self.State.toString(next_state), (timeNow - self.timeStateChange)))
     self.state = next_state
     self.timeStateChange = timeNow
 
@@ -65,6 +87,7 @@ class COILAgent(object):
     argParser.add_argument('--view', type=str, default="0,360,5", required=True, help="view angle range in degrees, right-open interval <start>,<stop>,<step> (no spaces)")
     self.context = Context.createInstance(description="COIL-100 image dataset processor", parent_argparsers=[argParser])  # TODO how to gather arg parsers from other interested parties?
     self.logger = logging.getLogger(__name__)
+    np.set_printoptions(precision=4, linewidth=120)  # few decimal places for output are fine; try not to break lines, especially in log files
     
     # * Parse arguments
     self.inDir = self.context.options.input_source  # will be an absolute path
@@ -76,9 +99,9 @@ class COILAgent(object):
     
     # * Create an instance of VisualSystem (VisionManager instance needs to be created per image; TODO change this when InputDevice is able to deal with sequence of separate images)
     self.context.update()  # get fresh time
-    self.visualSystem = VisualSystem(imageSize=self.image_size, timeNow=self.context.timeNow, showMonitor=False)
+    self.visualSystem = VisualSystem(imageSize=self.image_size, timeNow=self.context.timeNow, showMonitor=True)
     self.manager = COILManager(self.visualSystem)
-  
+    
   def start(self):
     if self.context.isDir:  # input source is a directory
       # * Run visual input using manager, looping over all specified object images

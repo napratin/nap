@@ -279,7 +279,7 @@ class VisualSystem(object):
           
     # * Update feature vector representing current state of neurons
     self.updateFeatureVector() 
-    self.logger.debug("[{}] Features: {}".format(self.timeNow, self.featureVector))
+    self.logger.debug("[{:.2f}] Features: {}".format(self.timeNow, self.featureVector))
           
     # * TODO Compute feature vector of attended region
     
@@ -368,7 +368,7 @@ class VisualSystem(object):
   
   def updateFeatureVector(self):
     self.featureVector = np.float32([pathway.output.neurons[0].potential for pathway in self.featurePathways.itervalues()])
-    # TODO Also compute mean and variance over a moving window here? (or should that be an agent-level function?)
+    # TODO Also compute mean and variance over a moving window here? (or should that be an agent/manager-level function?)
       
   def createPopulation(self, *args, **kwargs):
     """Create a basic Population with given arguments."""
