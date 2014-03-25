@@ -7,70 +7,26 @@ from datetime import datetime
 import numpy as np
 
 from lumos.context import Context
-from lumos.util import Enum
 from lumos.input import run
 
-from ..vision.visual_system import VisualSystem, VisionManager
+from ..vision.visual_system import VisualSystem, FeatureManager
 
 
-class COILManager(VisionManager):
+class COILManager(FeatureManager):
   """A visual system manager for processing a single COIL-100 image."""
   
-  State = Enum(('NONE', 'INCOMPLETE', 'UNSTABLE', 'STABLE'))
-  min_duration_incomplete = 2.0  # min. seconds to spend in incomplete state before transitioning (rolling buffer not full yet/neurons not activated enough)
-  min_duration_unstable = 2.0  # min. seconds to spend in unstable state before transitioning (avoid short stability periods)
-  max_duration_unstable = 5.0  # max. seconds to spend in unstable state before transitioning (avoid being stuck waiting forever for things to stabilize)
-  feature_buffer_size = 10  # number of iterations/samples to compute feature vector statistics over (rolling window)
-  max_feature_sd = 0.005  # max. s.d. (units: Volts) to tolerate in judging a signal as stable
-  
-  def __init__(self, visualSystem=None):
-    self.visualSystem = visualSystem if visualSystem is not None else VisualSystem()  # TODO remove this once VisionManager (or its ancestor caches visualSystem in __init__)
-    VisionManager.__init__(self, self.visualSystem)
-    self.state = self.State.NONE
-    self.timeStateChange = -1.0
-  
   def initialize(self, imageIn, timeNow):
-    VisionManager.initialize(self, imageIn, timeNow)
-    self.numFeatures = len(self.visualSystem.featureVector)
-    self.featureVectorBuffer = np.zeros((self.feature_buffer_size, self.numFeatures), dtype=np.float32)  # rolling buffer of feature vector samples
-    self.featureVectorIndex = 0  # index into feature vector buffer (count module size)
-    self.featureVectorCount = 0  # no. of feature vector samples collected (same as index, sans modulo)
-    self.featureVectorMean = np.zeros(self.numFeatures, dtype=np.float32)  # column mean of values in buffer
-    self.featureVectorSD = np.zeros(self.numFeatures, dtype=np.float32)  # standard deviation of values in buffer
-    self.logger.info("[{:.2f}] Features: {}".format(timeNow, self.visualSystem.featureLabels))
-    self.transition(self.State.INCOMPLETE, timeNow)
-    self.logger.debug("COILManager initialized")
+    FeatureManager.initialize(self, imageIn, timeNow)
   
   def process(self, imageIn, timeNow):
-    keepRunning, imageOut = VisionManager.process(self, imageIn, timeNow)
+    keepRunning, imageOut = FeatureManager.process(self, imageIn, timeNow)
     
-    # TODO Compute featureVector mean and variance over a moving window
-    self.featureVectorBuffer[self.featureVectorIndex, :] = self.visualSystem.featureVector
-    self.featureVectorCount += 1
-    self.featureVectorIndex = self.featureVectorCount % self.feature_buffer_size
-    
-    # TODO Change state according to feature vector values
-    deltaTime = timeNow - self.timeStateChange
-    if self.state == self.State.INCOMPLETE and deltaTime > self.min_duration_incomplete and self.featureVectorCount >= self.feature_buffer_size:
-      self.transition(self.State.UNSTABLE, timeNow)
-    elif self.state == self.State.UNSTABLE and deltaTime > self.min_duration_unstable:
-      np.mean(self.featureVectorBuffer, axis=0, dtype=np.float32, out=self.featureVectorMean)
-      np.std(self.featureVectorBuffer, axis=0, dtype=np.float32, out=self.featureVectorSD)
-      self.logger.debug("[{:.2f}] Mean: {}".format(timeNow, self.featureVectorMean))
-      self.logger.debug("[{:.2f}] S.D.: {}".format(timeNow, self.featureVectorSD))
-      if np.max(self.featureVectorSD) < self.max_feature_sd or deltaTime > self.max_duration_unstable:  # TODO use a time-scaled low-pass filtered criteria
-        self.transition(self.State.STABLE, timeNow)
-    elif self.state == self.State.STABLE:
+    if self.state == self.State.STABLE:
       self.logger.info("[Final] Mean: {}".format(self.featureVectorMean))
       self.logger.info("[Final] S.D.: {}".format(self.featureVectorSD))
       return False, imageOut  # Return False when done
     
     return keepRunning, imageOut
-  
-  def transition(self, next_state, timeNow):
-    self.logger.debug("[{:.2f}] Transitioning from {} to {} state after {:.2f}s".format(timeNow, self.State.toString(self.state), self.State.toString(next_state), (timeNow - self.timeStateChange)))
-    self.state = next_state
-    self.timeStateChange = timeNow
 
 
 class COILAgent(object):

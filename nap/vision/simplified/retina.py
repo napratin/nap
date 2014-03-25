@@ -4,6 +4,7 @@ import logging
 import numpy as np
 import cv2
 import cv2.cv as cv
+from collections import OrderedDict
 
 from lumos.context import Context
 from lumos.input import InputDevice, run
@@ -53,19 +54,27 @@ class Retina:
     #self.logger.info("Ganglion center-surround kernel sizes ({} levels): {}".format(self.ganglionKernelLevels, ", ".join("{}".format(k.shape) for k in self.ganglionKernels)))  # [debug]
     
     # * Image and related members
+    self.imageCenter = (self.imageSize[1] / 2, self.imageSize[0] / 2)
+    self.imageShapeC3 = (self.imageSize[1], self.imageSize[0], 3)  # numpy shape for 3 channel images
+    self.imageShapeC1 = (self.imageSize[1], self.imageSize[0])  # numpy shape for single channel images
+    # NOTE Image shapes (h, w, 1) and (h, w) are not compatible unless we use keepdims=True for numpy operations
+    self.imageTypeInt = np.uint8  # numpy dtype for integer-valued images
+    self.imageTypeFloat = np.float32  # numpy dtype for real-valued images
+    self.images = OrderedDict()
+    
     # ** RGB and HSV images
-    self.imageBGR = np.zeros((self.imageSize[1], self.imageSize[0], 3), dtype=np.uint8)
-    self.imageHSV = np.zeros((self.imageSize[1], self.imageSize[0], 3), dtype=np.uint8)
-    self.imageH = np.zeros((self.imageSize[1], self.imageSize[0], 1), dtype=np.uint8)
-    self.imageS = np.zeros((self.imageSize[1], self.imageSize[0], 1), dtype=np.uint8)
-    self.imageV = np.zeros((self.imageSize[1], self.imageSize[0], 1), dtype=np.uint8)
+    self.images['BGR'] = np.zeros(self.imageShapeC3, dtype=self.imageTypeInt)
+    self.images['HSV'] = np.zeros(self.imageShapeC3, dtype=self.imageTypeInt)
+    self.images['H'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeInt)
+    self.images['S'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeInt)
+    self.images['V'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeInt)
     
     # ** Freq/hue-dependent response images for rods and different cone types
-    self.imageRod = np.zeros((self.imageSize[1], self.imageSize[0], 1), dtype=np.float32)
+    self.imageRod = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
     self.imagesCone = dict()  # NOTE dict keys must match names of Cone.cone_types
-    self.imagesCone['S'] = np.zeros((self.imageSize[1], self.imageSize[0], 1), dtype=np.float32)
-    self.imagesCone['M'] = np.zeros((self.imageSize[1], self.imageSize[0], 1), dtype=np.float32)
-    self.imagesCone['L'] = np.zeros((self.imageSize[1], self.imageSize[0], 1), dtype=np.float32)
+    self.imagesCone['S'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
+    self.imagesCone['M'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
+    self.imagesCone['L'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
     
     # ** Bipolar and Ganglion cell response images
     # TODO Add more Ganglion cell types with different receptive field properties (color-opponent cells)
@@ -79,45 +88,45 @@ class Retina:
     #   'KW' +Black  -White (currently 'OFF')
     # NOTE: R = L cones, G = M cones, B = S cones
     self.imagesBipolar = dict()
-    self.imagesBipolar['ON'] = np.zeros((self.imageSize[1], self.imageSize[0], 1), dtype=np.float32)
-    self.imagesBipolar['OFF'] = np.zeros((self.imageSize[1], self.imageSize[0], 1), dtype=np.float32)
+    self.imagesBipolar['ON'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
+    self.imagesBipolar['OFF'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
     self.imagesGanglion = dict()
-    self.imagesGanglion['ON'] = np.zeros((self.imageSize[1], self.imageSize[0]), dtype=np.float32)
-    self.imagesGanglion['OFF'] = np.zeros((self.imageSize[1], self.imageSize[0]), dtype=np.float32)
+    self.imagesGanglion['ON'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
+    self.imagesGanglion['OFF'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
     # TODO Verify why image shapes (h, w, 1) and (h, w) are not compatible (use keepdims=True for numpy operations)
-    self.imagesGanglion['RG'] = np.zeros((self.imageSize[1], self.imageSize[0]), dtype=np.float32)
-    self.imagesGanglion['GR'] = np.zeros((self.imageSize[1], self.imageSize[0]), dtype=np.float32)
-    self.imagesGanglion['RB'] = np.zeros((self.imageSize[1], self.imageSize[0]), dtype=np.float32)
-    self.imagesGanglion['BR'] = np.zeros((self.imageSize[1], self.imageSize[0]), dtype=np.float32)
-    self.imagesGanglion['BY'] = np.zeros((self.imageSize[1], self.imageSize[0]), dtype=np.float32)
-    self.imagesGanglion['YB'] = np.zeros((self.imageSize[1], self.imageSize[0]), dtype=np.float32)
+    self.imagesGanglion['RG'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
+    self.imagesGanglion['GR'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
+    self.imagesGanglion['RB'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
+    self.imagesGanglion['BR'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
+    self.imagesGanglion['BY'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
+    self.imagesGanglion['YB'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
     
     # ** Combined response (salience) image
-    self.imageSalience = np.zeros((self.imageSize[1], self.imageSize[0]), dtype=np.float32)
+    self.imageSalience = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
     
     # ** Spatial attention map with a central (covert) spotlight (currently unused; TODO move to VisualCortex? also, use np.ogrid?)
-    self.imageAttention = np.zeros((self.imageSize[1], self.imageSize[0]), dtype=np.float32)
+    self.imageAttention = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
     cv2.circle(self.imageAttention, (self.imageSize[1] / 2, self.imageSize[0] / 2), self.imageSize[0] / 3, 1.0, cv.CV_FILLED)
     self.imageAttention = cv2.blur(self.imageAttention, (self.imageSize[0] / 4, self.imageSize[0] / 4))  # coarse blur
     
     # ** Output image(s)
     if self.context.options.gui:
-      self.imageOut = np.zeros((self.imageSize[1], self.imageSize[0], 3), dtype=np.uint8)
+      self.imageOut = np.zeros(self.imageShapeC3, dtype=self.imageTypeInt)
   
   def update(self, timeNow):
     self.timeNow = timeNow
     self.logger.debug("Retina update @ {}".format(self.timeNow))
     
     # * Get HSV
-    self.imageHSV = cv2.cvtColor(self.imageBGR, cv2.COLOR_BGR2HSV)
-    self.imageH, self.imageS, self.imageV = cv2.split(self.imageHSV)
+    self.images['HSV'] = cv2.cvtColor(self.images['BGR'], cv2.COLOR_BGR2HSV)
+    self.images['H'], self.images['S'], self.images['V'] = cv2.split(self.images['HSV'])
     
     # * Compute Rod and Cone responses
     # TODO Need non-linear response to hue, sat, val (less dependent on sat, val for cones)
-    self.imageRod = np.float32(180 - cv2.absdiff(self.imageH, Rod.rod_type.hue) % 180) * 255 * self.imageV * Rod.rod_type.responseFactor  # hack: use constant sat = 200 to make response independent of saturation
-    self.imagesCone['S'] = np.float32(180 - cv2.absdiff(self.imageH, Cone.cone_types[0].hue) % 180) * self.imageS * self.imageV * Cone.cone_types[0].responseFactor
-    self.imagesCone['M'] = np.float32(180 - cv2.absdiff(self.imageH, Cone.cone_types[1].hue) % 180) * self.imageS * self.imageV * Cone.cone_types[1].responseFactor
-    self.imagesCone['L'] = np.float32(180 - cv2.absdiff(self.imageH, Cone.cone_types[2].hue) % 180) * self.imageS * self.imageV * Cone.cone_types[2].responseFactor
+    self.imageRod = np.float32(180 - cv2.absdiff(self.images['H'], Rod.rod_type.hue) % 180) * 255 * self.images['V'] * Rod.rod_type.responseFactor  # hack: use constant sat = 200 to make response independent of saturation
+    self.imagesCone['S'] = np.float32(180 - cv2.absdiff(self.images['H'], Cone.cone_types[0].hue) % 180) * self.images['S'] * self.images['V'] * Cone.cone_types[0].responseFactor
+    self.imagesCone['M'] = np.float32(180 - cv2.absdiff(self.images['H'], Cone.cone_types[1].hue) % 180) * self.images['S'] * self.images['V'] * Cone.cone_types[1].responseFactor
+    self.imagesCone['L'] = np.float32(180 - cv2.absdiff(self.images['H'], Cone.cone_types[2].hue) % 180) * self.images['S'] * self.images['V'] * Cone.cone_types[2].responseFactor
     
     # * Compute Bipolar and Ganglion cell responses
     # ** Blurring is a step that is effectively achieved in biology by horizontal cells
@@ -172,9 +181,9 @@ class Retina:
     
     # * Show output images if in GUI mode
     if self.context.options.gui:
-      #cv2.imshow("Hue", self.imageH)
-      #cv2.imshow("Saturation", self.imageS)
-      #cv2.imshow("Value", self.imageV)
+      #cv2.imshow("Hue", self.images['H'])
+      #cv2.imshow("Saturation", self.images['S'])
+      #cv2.imshow("Value", self.images['V'])
       cv2.imshow("Rod response", self.imageRod)
       cv2.imshow("S-cone response", self.imagesCone['S'])
       cv2.imshow("M-cone response", self.imagesCone['M'])

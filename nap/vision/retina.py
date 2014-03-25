@@ -9,6 +9,7 @@ import inspect
 from unittest import TestCase
 import numpy as np
 import cv2
+from collections import OrderedDict
 
 from lumos.context import Context
 from lumos.base import FrameProcessor
@@ -54,26 +55,34 @@ class Retina:
     self.bipolarCellPlotColor = 'orange'
     
     # * Image and related members
+    self.imageCenter = (self.imageSize[1] / 2, self.imageSize[0] / 2)
+    self.imageShapeC3 = (self.imageSize[1], self.imageSize[0], 3)  # numpy shape for 3 channel images
+    self.imageShapeC1 = (self.imageSize[1], self.imageSize[0])  # numpy shape for single channel images
+    # NOTE Image shapes (h, w, 1) and (h, w) are not compatible unless we use keepdims=True for numpy operations
+    self.imageTypeInt = np.uint8  # numpy dtype for integer-valued images
+    self.imageTypeFloat = np.float32  # numpy dtype for real-valued images
+    self.images = OrderedDict()
+    
     # ** RGB and HSV images
-    self.imageBGR = np.zeros((self.imageSize[1], self.imageSize[0], 3), dtype=np.uint8)
-    self.imageHSV = np.zeros((self.imageSize[1], self.imageSize[0], 3), dtype=np.uint8)
-    self.imageH = np.zeros((self.imageSize[1], self.imageSize[0], 1), dtype=np.uint8)
-    self.imageS = np.zeros((self.imageSize[1], self.imageSize[0], 1), dtype=np.uint8)
-    self.imageV = np.zeros((self.imageSize[1], self.imageSize[0], 1), dtype=np.uint8)
+    self.images['BGR'] = np.zeros(self.imageShapeC3, dtype=self.imageTypeInt)
+    self.images['HSV'] = np.zeros(self.imageShapeC3, dtype=self.imageTypeInt)
+    self.images['H'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeInt)
+    self.images['S'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeInt)
+    self.images['V'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeInt)
     
     # ** Freq/hue-dependent response images for rods and different cone types
-    self.imageRod = np.zeros((self.imageSize[1], self.imageSize[0], 1), dtype=np.float32)
+    self.imageRod = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
     self.imagesCone = dict()  # NOTE dict keys must match names of Cone.cone_types
-    self.imagesCone['S'] = np.zeros((self.imageSize[1], self.imageSize[0], 1), dtype=np.float32)
-    self.imagesCone['M'] = np.zeros((self.imageSize[1], self.imageSize[0], 1), dtype=np.float32)
-    self.imagesCone['L'] = np.zeros((self.imageSize[1], self.imageSize[0], 1), dtype=np.float32)
+    self.imagesCone['S'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
+    self.imagesCone['M'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
+    self.imagesCone['L'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
     
     # ** Output image(s)
     if self.context.options.gui:
-      self.imageOut = np.zeros((self.imageSize[1], self.imageSize[0], 3), dtype=np.uint8)
+      self.imageOut = np.zeros(self.imageShapeC3, dtype=self.imageTypeInt)
       self.imagesBipolar = dict()
-      self.imagesBipolar['ON'] = np.zeros((self.imageSize[1], self.imageSize[0], 1), dtype=np.uint8)
-      self.imagesBipolar['OFF'] = np.zeros((self.imageSize[1], self.imageSize[0], 1), dtype=np.uint8)
+      self.imagesBipolar['ON'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeInt)
+      self.imagesBipolar['OFF'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeInt)
     
     # * Create neuron populations
     # ** Photoreceptors
@@ -94,17 +103,17 @@ class Retina:
   def update(self, timeNow):
     self.timeNow = timeNow
     self.logger.debug("Retina update @ {}".format(self.timeNow))
-    self.imageHSV = cv2.cvtColor(self.imageBGR, cv2.COLOR_BGR2HSV)
-    self.imageH, self.imageS, self.imageV = cv2.split(self.imageHSV)
+    self.images['HSV'] = cv2.cvtColor(self.images['BGR'], cv2.COLOR_BGR2HSV)
+    self.images['H'], self.images['S'], self.images['V'] = cv2.split(self.images['HSV'])
     # TODO Need non-linear response to hue, sat, val (less dependent on sat, val for cones)
-    self.imageRod = np.float32(180 - cv2.absdiff(self.imageH, Rod.rod_type.hue) % 180) * 255 * self.imageV * Rod.rod_type.responseFactor  # hack: use constant sat = 200 to make response independent of saturation
-    self.imagesCone['S'] = np.float32(180 - cv2.absdiff(self.imageH, Cone.cone_types[0].hue) % 180) * self.imageS * self.imageV * Cone.cone_types[0].responseFactor
-    self.imagesCone['M'] = np.float32(180 - cv2.absdiff(self.imageH, Cone.cone_types[1].hue) % 180) * self.imageS * self.imageV * Cone.cone_types[1].responseFactor
-    self.imagesCone['L'] = np.float32(180 - cv2.absdiff(self.imageH, Cone.cone_types[2].hue) % 180) * self.imageS * self.imageV * Cone.cone_types[2].responseFactor
+    self.imageRod = np.float32(180 - cv2.absdiff(self.images['H'], Rod.rod_type.hue) % 180) * 255 * self.images['V'] * Rod.rod_type.responseFactor  # hack: use constant sat = 200 to make response independent of saturation
+    self.imagesCone['S'] = np.float32(180 - cv2.absdiff(self.images['H'], Cone.cone_types[0].hue) % 180) * self.images['S'] * self.images['V'] * Cone.cone_types[0].responseFactor
+    self.imagesCone['M'] = np.float32(180 - cv2.absdiff(self.images['H'], Cone.cone_types[1].hue) % 180) * self.images['S'] * self.images['V'] * Cone.cone_types[1].responseFactor
+    self.imagesCone['L'] = np.float32(180 - cv2.absdiff(self.images['H'], Cone.cone_types[2].hue) % 180) * self.images['S'] * self.images['V'] * Cone.cone_types[2].responseFactor
     if self.context.options.gui:
-      #cv2.imshow("Hue", self.imageH)
-      #cv2.imshow("Saturation", self.imageS)
-      #cv2.imshow("Value", self.imageV)
+      #cv2.imshow("Hue", self.images['H'])
+      #cv2.imshow("Saturation", self.images['S'])
+      #cv2.imshow("Value", self.images['V'])
       cv2.imshow("Rod response", self.imageRod)
       cv2.imshow("S-cone response", self.imagesCone['S'])
       cv2.imshow("M-cone response", self.imagesCone['M'])
@@ -230,11 +239,12 @@ class Projector(FrameProcessor):
   
   def process(self, imageIn, timeNow):
     self.image = imageIn
+    self.timeNow = timeNow
     # Copy image to screen, and part of screen to retina (TODO optimize this to a single step?)
     self.screen[self.imageRect[2]:self.imageRect[3], self.imageRect[0]:self.imageRect[1]] = self.image
     #if self.context.options.gui: cv2.imshow("Screen", self.screen)  # [debug]
     self.retina.images['BGR'][:] = self.screen[self.focusRect[2]:self.focusRect[3], self.focusRect[0]:self.focusRect[1]]  # NOTE only compatible with VisualSystem
-    #if self.context.options.gui: cv2.imshow("Retina", self.retina.imageBGR)  # [debug]
+    #if self.context.options.gui: cv2.imshow("Retina", self.retina.images['BGR'])  # [debug]
     
     self.retina.update(timeNow)
     

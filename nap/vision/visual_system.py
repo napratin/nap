@@ -9,6 +9,7 @@ from collections import OrderedDict
 
 #import pyNN.neuron as sim
 from lumos.context import Context
+from lumos.util import Enum
 from lumos.input import InputDevice, run
 
 from ..neuron import Neuron, Population, Projection, neuron_inhibition_period, Uniform, MultivariateUniform, NeuronMonitor, plotPopulations
@@ -17,10 +18,13 @@ from .simplified.retina import SimplifiedProjector
 from .simplified.visual_cortex import SalienceNeuron, SelectionNeuron, FeatureNeuron
 
 
+default_feature_weight = 0.75  # default weight for a feature pathway, treated as update probability for its neurons
+
+
 class VisualFeaturePathway(object):
   """A collection of connected neuron populations that together compute a particular visual feature."""
   
-  def __init__(self, label, populations, projections, output=None, timeNow=0.0):
+  def __init__(self, label, populations, projections, output=None, p=default_feature_weight, timeNow=0.0):
     self.label = label
     self.populations = populations  # order of populations matters here; this is the order in which they will be updated
     self.projections = projections
@@ -30,6 +34,7 @@ class VisualFeaturePathway(object):
     
     # * Top-level interface (TODO add neuron response/spike frequency as measure of strength)
     self.active = True  # used to selectively update specific pathways
+    self.p = p  # update probability
     self.selectedNeuron = None  # the last selected SelectionNeuron, mainly for display and top-level output
     self.selectedTime = 0.0  # corresponding timestamp
   
@@ -216,14 +221,15 @@ class VisualSystem(object):
     # * Compute combined (salience) image; TODO incorporate attention weighting (spatial, as well as by visual feature)
     # ** Method 1: Max of all Ganglion cell images
     self.images['Salience'].fill(0.0)
-    for _, ganglionImage in self.images['Ganglion'].iteritems():
-      self.images['Salience'] = np.maximum(self.images['Salience'], ganglionImage)
+    for ganglionType, ganglionImage in self.images['Ganglion'].iteritems():
+      #self.images['Salience'] = np.maximum(self.images['Salience'], ganglionImage)
+      self.images['Salience'] = np.maximum(self.images['Salience'], np.sqrt(self.featurePathways[ganglionType].p) * ganglionImage)  # scaled by feature pathway probabilities (for display only)
     
     #self.images['Salience'] *= self.image['Attention']  # TODO evaluate if this is necessary
     
     # * Compute features along each pathway
     for pathwayLabel, featurePathway in self.featurePathways.iteritems():
-      if featurePathway.active:  # TODO implement adaptive sampling for feature pathway updates as well
+      if featurePathway.active:
         # ** Update feature pathway populations (TODO find a more reliable way of grabbing salience and selection neuron populations)
         #featurePathway.update(self.timeNow)  # currently doesn't do anything, update populations explicitly
         salienceNeurons = featurePathway.populations[0]
@@ -231,14 +237,20 @@ class VisualSystem(object):
         featureNeurons = featurePathway.populations[2]
         # *** Salience neurons
         for salienceNeuron in salienceNeurons.neurons:
-          salienceNeuron.update(timeNow)  # update every iteration
-          #salienceNeuron.updateWithP(timeNow)  # update probabilistically
+          #salienceNeuron.update(timeNow)  # update every iteration
+          #salienceNeuron.updateWithP(timeNow)  # update using intrinsic probability (adaptive)
+          if np.random.uniform() < featurePathway.p:  # update using pathway probability (TODO try to make this adaptive?)
+            salienceNeuron.update(timeNow)
           #self.logger.debug("{} Salience neuron potential: {:.3f}, response: {:.3f}, I_e: {}, pixelValue: {}".format(pathwayLabel, salienceNeuron.potential, salienceNeuron.response, salienceNeuron.I_e, salienceNeuron.pixelValue))
           
         # *** Selection neurons (TODO mostly duplicated code, perhaps generalizable?)
         for selectionNeuron in selectionNeurons.neurons:
-          selectionNeuron.update(timeNow)  # update every iteration
-          #selectionNeuron.updateWithP(timeNow)  # update probabilistically
+          #selectionNeuron.update(timeNow)  # update every iteration
+          #selectionNeuron.updateWithP(timeNow)  # update using intrinsic probability (adaptive)
+          if np.random.uniform() < featurePathway.p:  # update using pathway probability (TODO try to make this adaptive?)
+            selectionNeuron.update(timeNow)
+          else:
+            selectionNeuron.potentialAccumulated = 0.0  # clear any accumulated potential, effectively inhibiting the selection neuron
           #self.logger.debug("{} Selection neuron potential: {:.3f}, pixelValue: {}".format(pathwayLabel, selectionNeuron.potential, selectionNeuron.pixelValue))
         
         # **** Pick one selection neuron, inhibit others
@@ -274,7 +286,7 @@ class VisualSystem(object):
           
           # *** Selection neurons (TODO gather representative receptive field from source connections and cache it for use here, instead of using constant size?)
           #self.imageSelectionOut.fill(0.0)
-          #cv2.circle(self.imageSelectionOut, (featurePathway.selectedNeuron.pixel[0], featurePathway.selectedNeuron.pixel[1]), self.imageSize[0] / 20, int(255 * exp(featurePathway.selectedTime - timeNow)), cv.CV_FILLED)  # draw selected neuron with a shade that fades with time (TODO more accurate receptive field?)
+          #cv2.circle(self.imageSelectionOut, (featurePathway.selectedNeuron.pixel[0], featurePathway.selectedNeuron.pixel[1]), self.imageSize[0] / 20, int(255 * exp(featurePathway.selectedTime - timeNow)), cv.CV_FILLED)  # draw selected neuron with a shade that fades with time
           #cv2.imshow("{} Selection".format(pathwayLabel), self.imageSelectionOut)
           
     # * Update feature vector representing current state of neurons
@@ -284,20 +296,22 @@ class VisualSystem(object):
     # * TODO Compute feature vector of attended region
     
     # * TODO Final output image
-    #self.imageOut = cv2.bitwise_and(self.retina.imageBGR, self.retina.imageBGR, mask=self.imageSelectionOut)
+    #self.imageOut = cv2.bitwise_and(self.retina.images['BGR'], self.retina.images['BGR'], mask=self.imageSelectionOut)
     
     # * Show output images if in GUI mode
     if self.context.options.gui:
       #cv2.imshow("Hue", self.images['H'])
       #cv2.imshow("Saturation", self.images['S'])
       #cv2.imshow("Value", self.images['V'])
-      cv2.imshow("Rod response", self.images['Rod'])
-      for coneType, coneImage in self.images['Cone'].iteritems():
-        cv2.imshow("{} Cones".format(coneType), coneImage)
-      for bipolarType, bipolarImage in self.images['Bipolar'].iteritems():
-        cv2.imshow("{} Bipolar cells".format(bipolarType), bipolarImage)
-      for ganglionType, ganglionImage in self.images['Ganglion'].iteritems():
-        cv2.imshow("{} Ganglion cells".format(ganglionType), ganglionImage)
+      if self.context.options.debug:  # only show detail when in debug mode
+        cv2.imshow("Rod response", self.images['Rod'])
+        for coneType, coneImage in self.images['Cone'].iteritems():
+          cv2.imshow("{} Cones".format(coneType), coneImage)
+        for bipolarType, bipolarImage in self.images['Bipolar'].iteritems():
+          cv2.imshow("{} Bipolar cells".format(bipolarType), bipolarImage)
+        for ganglionType, ganglionImage in self.images['Ganglion'].iteritems():
+          cv2.imshow("{} Ganglion cells".format(ganglionType), ganglionImage)
+          #cv2.imshow("{} Ganglion cells".format(ganglionType), np.sqrt(self.featurePathways[ganglionType].p) * ganglionImage)  # show image weighted by selected feature probability, artificially scaled to make responses visible
       cv2.imshow("Salience", self.images['Salience'])
       
       # Designate a representative output image
@@ -366,6 +380,15 @@ class VisualSystem(object):
     self.featureVector = None
     self.updateFeatureVector()
   
+  def updateFeatureWeights(self, featureWeights, rest=None):
+    """Update weights for features mentioned in given dict, using rest for others if not None."""
+    # TODO Handle special labels for spatial selection
+    for label, pathway in self.featurePathways.iteritems():
+      if label in featureWeights:
+        pathway.p = featureWeights[label]
+      elif rest is not None:
+        pathway.p = rest
+  
   def updateFeatureVector(self):
     self.featureVector = np.float32([pathway.output.neurons[0].potential for pathway in self.featurePathways.itervalues()])
     # TODO Also compute mean and variance over a moving window here? (or should that be an agent/manager-level function?)
@@ -396,6 +419,66 @@ class VisionManager(SimplifiedProjector):
   
   def __init__(self, retina=None):
     SimplifiedProjector.__init__(self, retina if retina is not None else VisualSystem())
+
+
+class FeatureManager(VisionManager):
+  """A visual system manager for computing stable features."""
+  
+  State = Enum(('NONE', 'INCOMPLETE', 'UNSTABLE', 'STABLE'))
+  min_duration_incomplete = 2.0  # min. seconds to spend in incomplete state before transitioning (rolling buffer not full yet/neurons not activated enough)
+  min_duration_unstable = 2.0  # min. seconds to spend in unstable state before transitioning (avoid short stability periods)
+  max_duration_unstable = 5.0  # max. seconds to spend in unstable state before transitioning (avoid being stuck waiting forever for things to stabilize)
+  feature_buffer_size = 10  # number of iterations/samples to compute feature vector statistics over (rolling window)
+  max_feature_sd = 0.005  # max. s.d. (units: Volts) to tolerate in judging a signal as stable
+  
+  def __init__(self, visualSystem=None):
+    self.visualSystem = visualSystem if visualSystem is not None else VisualSystem()  # TODO remove this once VisionManager (or its ancestor caches visualSystem in __init__)
+    VisionManager.__init__(self, self.visualSystem)
+    self.state = self.State.NONE
+    self.timeStateChange = -1.0
+    np.set_printoptions(precision=4, linewidth=120)  # few decimal places for output are fine; try not to break lines, especially in log files
+  
+  def initialize(self, imageIn, timeNow):
+    VisionManager.initialize(self, imageIn, timeNow)
+    self.numFeatures = len(self.visualSystem.featureVector)
+    self.featureVectorBuffer = np.zeros((self.feature_buffer_size, self.numFeatures), dtype=np.float32)  # rolling buffer of feature vector samples
+    self.featureVectorIndex = 0  # index into feature vector buffer (count module size)
+    self.featureVectorCount = 0  # no. of feature vector samples collected (same as index, sans modulo)
+    self.featureVectorMean = np.zeros(self.numFeatures, dtype=np.float32)  # column mean of values in buffer
+    self.featureVectorSD = np.zeros(self.numFeatures, dtype=np.float32)  # standard deviation of values in buffer
+    self.logger.info("[{:.2f}] Features: {}".format(timeNow, self.visualSystem.featureLabels))
+    self.transition(self.State.INCOMPLETE, timeNow)
+    self.logger.debug("Initialized")
+  
+  def process(self, imageIn, timeNow):
+    keepRunning, imageOut = VisionManager.process(self, imageIn, timeNow)
+    
+    # Compute featureVector mean and variance over a moving window
+    self.featureVectorBuffer[self.featureVectorIndex, :] = self.visualSystem.featureVector
+    self.featureVectorCount += 1
+    self.featureVectorIndex = self.featureVectorCount % self.feature_buffer_size
+    
+    # Change state according to feature vector values
+    deltaTime = timeNow - self.timeStateChange
+    if self.state == self.State.INCOMPLETE and deltaTime > self.min_duration_incomplete and self.featureVectorCount >= self.feature_buffer_size:
+      self.transition(self.State.UNSTABLE, timeNow)
+    elif self.state == self.State.UNSTABLE or self.state == self.State.STABLE:
+      np.mean(self.featureVectorBuffer, axis=0, dtype=np.float32, out=self.featureVectorMean)
+      np.std(self.featureVectorBuffer, axis=0, dtype=np.float32, out=self.featureVectorSD)
+      self.logger.debug("[{:.2f}] Mean: {}".format(timeNow, self.featureVectorMean))
+      self.logger.debug("[{:.2f}] S.D.: {}".format(timeNow, self.featureVectorSD))
+      if self.state == self.State.UNSTABLE and deltaTime > self.min_duration_unstable and \
+          (np.max(self.featureVectorSD) <= self.max_feature_sd or deltaTime > self.max_duration_unstable):  # TODO use a time-scaled low-pass filtered criteria
+        self.transition(self.State.STABLE, timeNow)
+      elif self.state == self.State.STABLE and np.max(self.featureVectorSD) > self.max_feature_sd:
+        self.transition(self.State.UNSTABLE, timeNow)
+    
+    return keepRunning, imageOut
+  
+  def transition(self, next_state, timeNow):
+    self.logger.debug("[{:.2f}] Transitioning from {} to {} state after {:.2f}s".format(timeNow, self.State.toString(self.state), self.State.toString(next_state), (timeNow - self.timeStateChange)))
+    self.state = next_state
+    self.timeStateChange = timeNow
 
 
 def test_VisualSystem():
