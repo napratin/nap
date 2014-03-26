@@ -47,7 +47,6 @@ class COILAgent(object):
     argParser.add_argument('--view', type=str, default="0,360,5", required=True, help="view angle range in degrees, right-open interval <start>,<stop>,<step> (no spaces)")
     self.context = Context.createInstance(description="COIL-100 image dataset processor", parent_argparsers=[argParser])  # TODO how to gather arg parsers from other interested parties?
     self.logger = logging.getLogger(__name__)
-    np.set_printoptions(precision=4, linewidth=120)  # few decimal places for output are fine; try not to break lines, especially in log files
     
     # * Parse arguments
     self.inDir = self.context.options.input_source  # will be an absolute path

@@ -18,7 +18,11 @@ from .simplified.retina import SimplifiedProjector
 from .simplified.visual_cortex import SalienceNeuron, SelectionNeuron, FeatureNeuron
 
 
+# Global variables
 default_feature_weight = 0.75  # default weight for a feature pathway, treated as update probability for its neurons
+
+# Global initialization
+np.set_printoptions(precision=4, linewidth=120)  # for printing feature vectors: a few decimal places are fine; try not to break lines, especially in log files
 
 
 class VisualFeaturePathway(object):
@@ -26,6 +30,7 @@ class VisualFeaturePathway(object):
   
   def __init__(self, label, populations, projections, output=None, p=default_feature_weight, timeNow=0.0):
     self.label = label
+    self.logger = logging.getLogger("{}-pathway".format(self.label))
     self.populations = populations  # order of populations matters here; this is the order in which they will be updated
     self.projections = projections
     #assert output in self.populations  # usually, output is a population, but it can be something else
@@ -37,10 +42,14 @@ class VisualFeaturePathway(object):
     self.p = p  # update probability
     self.selectedNeuron = None  # the last selected SelectionNeuron, mainly for display and top-level output
     self.selectedTime = 0.0  # corresponding timestamp
+    self.logger.debug("Initialized {}".format(self))
   
   def update(self, timeNow):
     self.timeNow = timeNow
     # feature pathway specific updates may need to be carried out externally
+  
+  def __str__(self):
+    return "{obj.label}-pathway: active: {obj.active}, p: {obj.p}, output: {output}".format(obj=self, output=(self.output.neurons[0].potential if self.output is not None and len(self.output.neurons) > 0 else None))
 
 
 class VisualSystem(object):
@@ -223,6 +232,7 @@ class VisualSystem(object):
     self.images['Salience'].fill(0.0)
     for ganglionType, ganglionImage in self.images['Ganglion'].iteritems():
       #self.images['Salience'] = np.maximum(self.images['Salience'], ganglionImage)
+      #self.logger.debug("[Salience] Combining {}".format(self.featurePathways[ganglionType]))  # [verbose]
       self.images['Salience'] = np.maximum(self.images['Salience'], np.sqrt(self.featurePathways[ganglionType].p) * ganglionImage)  # scaled by feature pathway probabilities (for display only)
     
     #self.images['Salience'] *= self.image['Attention']  # TODO evaluate if this is necessary
@@ -292,7 +302,7 @@ class VisualSystem(object):
     # * Update feature vector representing current state of neurons
     self.updateFeatureVector() 
     self.logger.debug("[{:.2f}] Features: {}".format(self.timeNow, self.featureVector))
-          
+    
     # * TODO Compute feature vector of attended region
     
     # * TODO Final output image
@@ -371,7 +381,7 @@ class VisualSystem(object):
           source.gateNeuron(target)
       
       # ** Add to dictionary of feature pathways
-      self.featurePathways[pathwayLabel] = VisualFeaturePathway(pathwayLabel, [salienceNeurons, selectionNeurons, featureNeurons], None, featureNeurons, self.timeNow)
+      self.featurePathways[pathwayLabel] = VisualFeaturePathway(label=pathwayLabel, populations=[salienceNeurons, selectionNeurons, featureNeurons], projections=None, output=featureNeurons, timeNow=self.timeNow)
   
       # ** Show neuron layers and connections [debug]
       #plotPopulations([salienceNeurons, selectionNeurons, featureNeurons], showConnections=True, equalScaleZ=True)  # [debug]
@@ -436,7 +446,6 @@ class FeatureManager(VisionManager):
     VisionManager.__init__(self, self.visualSystem)
     self.state = self.State.NONE
     self.timeStateChange = -1.0
-    np.set_printoptions(precision=4, linewidth=120)  # few decimal places for output are fine; try not to break lines, especially in log files
   
   def initialize(self, imageIn, timeNow):
     VisionManager.initialize(self, imageIn, timeNow)
