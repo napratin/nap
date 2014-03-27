@@ -3,7 +3,7 @@
 import logging
 from math import pi, exp, log
 import random
-from collections import namedtuple
+from collections import namedtuple, OrderedDict
 from threading import Thread
 import numpy as np
 import cv2
@@ -531,11 +531,11 @@ class NeuronMonitor(object):
     self.num_samples = self.duration * self.sampling_rate
     self.times = np.linspace(0.0, self.duration, self.num_samples)  # pick num_samples samples in the range [0.0, duration]
     self.sample_index = 0  # common index into each channel's samples array
-    self.channels = dict()
+    self.channels = OrderedDict()
   
-  def addChannel(self, label, obj, attr='potential', analog=True):
+  def addChannel(self, label, obj, attr='potential', analog=True, color=None):
     """Add a new channel to this monitor for plotting obj.attr."""
-    channel = dict(obj=obj, attr=attr, analog=analog, samples=np.repeat(np.float32(getattr(obj, attr, 0.0)), self.num_samples))
+    channel = dict(obj=obj, attr=attr, analog=analog, color=color, samples=np.repeat(np.float32(getattr(obj, attr, 0.0)), self.num_samples))
     self.channels[label] = channel  # samples will be plotted when start() is called
   
   def start(self, run_setup=True, run_update_loop=True):
@@ -549,9 +549,11 @@ class NeuronMonitor(object):
       self.setup()
     
     # Create initial plots
+    i = 0  # for counting backup (auto) colors; won't be used if channel colors are specified
     for label, channel in self.channels.iteritems():
       # TODO Create different plots based on analog flag
-      channel['plot'] = self.ax.plot(self.times, channel['samples'], label=label, **self.plot_params)[0]  # assuming first (and only) returned plot is the one we want
+      channel['plot'] = self.ax.plot(self.times, channel['samples'], label=label, color=(channel['color'] if channel['color'] is not None else cm.jet(1. * i / len(self.channels))), **self.plot_params)[0]  # assuming first (and only) returned plot is the one we want
+      i += 1
     self.ax.legend(loc='upper right')
     self.fig.show()
     

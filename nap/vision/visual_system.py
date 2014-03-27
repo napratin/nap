@@ -122,6 +122,7 @@ class VisualSystem(object):
     #   'KW' +Black  -White (currently 'OFF')
     # NOTE R = L cones, G = M cones, B = S cones
     self.ganglionTypes = ['ON', 'OFF', 'RG', 'GR', 'RB', 'BR', 'BY', 'YB']
+    self.featurePlotColors = {'ON': 'gray', 'OFF': 'black', 'RG': 'red', 'GR': 'green', 'RB': 'tomato', 'BR': 'blue', 'BY': 'magenta', 'YB': 'gold'}
     self.numGanglionTypes = np.int_(len(self.ganglionTypes))  # TODO use a single num-features parameter across the board?
     self.numGanglionTypes_inv = 1.0 / self.imageTypeFloat(self.numGanglionTypes)  # [optimization: frequently used quantity]
     self.images['Ganglion'] = OrderedDict()
@@ -178,7 +179,7 @@ class VisualSystem(object):
       if showMonitor:
         self.neuronPotentialMonitor = NeuronMonitor()
         for pathwayLabel, featurePathway in self.featurePathways.iteritems():
-          self.neuronPotentialMonitor.addChannel(pathwayLabel, featurePathway.output.neurons[0])  # very hard-coded way to access single output neuron!
+          self.neuronPotentialMonitor.addChannel(label=pathwayLabel, obj=featurePathway.output.neurons[0], color=self.featurePlotColors[pathwayLabel])  # very hard-coded way to access single output neuron!
         self.neuronPotentialMonitor.start()
   
   def update(self, timeNow):
@@ -289,14 +290,14 @@ class VisualSystem(object):
         for selectionNeuron in selectionNeurons.neurons:
           # Render selection neuron's position with response-based pixel value (TODO build receptive field when synapses are made, or later, using a stimulus test phase?)
           #if selectionNeuron.pixelValue > 200: print "[{:.2f}] {}".format(timeNow, selectionNeuron)  # [debug]
-          if not selectionNeuron.isInhibited:  # no point drawing black circles for inhibited neurons
-            #numUninhibited += 1  # [debug]
+          if not selectionNeuron.isInhibited and selectionNeuron.timeLastFired == timeNow:  # only deal with uninhibited neurons that just fired in this iteration
+            #numUninhibitedFired += 1  # [debug]
             #cv2.circle(self.imageSelectionOut, (selectionNeuron.pixel[0], selectionNeuron.pixel[1]), self.imageSize[0] / 20, selectionNeuron.pixelValue, cv.CV_FILLED)  # only render the one selected neuron, later
             featurePathway.selectedNeuron = selectionNeuron
             featurePathway.selectedTime = timeNow
             featurePathway.selectedNeuron.inhibit(timeNow, neuron_inhibition_period + 0.75)  # inhibit selected neuron for a bit longer
             break  # first uninhibited SelectionNeuron will be our selected neuron
-        #print "# Uninhibited selection neurons: {}".format(numUninhibited)  # [debug]
+        #print "# Uninhibited selection neurons that fired: {}".format(numUninhibitedFired)  # [debug]
         
         # *** Feature neuron
         for featureNeuron in featureNeurons.neurons:
@@ -314,9 +315,10 @@ class VisualSystem(object):
             cv2.circle(self.imageSalienceOut, (salienceNeuron.pixel[0], salienceNeuron.pixel[1]), np.int_(salienceNeuron.rfCenterRadius), salienceNeuron.pixelValue, cv.CV_FILLED)
           
           # *** Selection neurons (TODO gather representative receptive field from source connections and cache it for use here, instead of using constant size?)
-          #self.imageSelectionOut.fill(0.0)
-          cv2.circle(self.imageSalienceOut, (featurePathway.selectedNeuron.pixel[0], featurePathway.selectedNeuron.pixel[1]), self.imageSize[0] / 20, int(255 * exp(featurePathway.selectedTime - timeNow)), 3)  # draw selected neuron with a shade that fades with time (on salience output image)
-          #cv2.circle(self.imageSelectionOut, (featurePathway.selectedNeuron.pixel[0], featurePathway.selectedNeuron.pixel[1]), self.imageSize[0] / 20, int(255 * exp(featurePathway.selectedTime - timeNow)), cv.CV_FILLED)  # draw selected neuron with a shade that fades with time
+          if featurePathway.selectedNeuron is not None and (timeNow - featurePathway.selectedTime) < 3.0:
+            #self.imageSelectionOut.fill(0.0)
+            cv2.circle(self.imageSalienceOut, (featurePathway.selectedNeuron.pixel[0], featurePathway.selectedNeuron.pixel[1]), self.imageSize[0] / 20, int(255 * exp(featurePathway.selectedTime - timeNow)), 2)  # draw selected neuron with a shade that fades with time (on salience output image)
+            #cv2.circle(self.imageSelectionOut, (featurePathway.selectedNeuron.pixel[0], featurePathway.selectedNeuron.pixel[1]), self.imageSize[0] / 20, int(255 * exp(featurePathway.selectedTime - timeNow)), cv.CV_FILLED)  # draw selected neuron with a shade that fades with time
           
           cv2.imshow("{} Salience".format(pathwayLabel), self.imageSalienceOut)
           #cv2.imshow("{} Selection".format(pathwayLabel), self.imageSelectionOut)
@@ -336,10 +338,10 @@ class VisualSystem(object):
       #cv2.imshow("Hue", self.images['H'])
       #cv2.imshow("Saturation", self.images['S'])
       #cv2.imshow("Value", self.images['V'])
-      if self.context.options.debug:  # only show detail when in debug mode
-        cv2.imshow("Rod response", self.images['Rod'])
-        for coneType, coneImage in self.images['Cone'].iteritems():
-          cv2.imshow("{} Cones".format(coneType), coneImage)
+      if self.context.options.debug:  # only show detail when in debug mode; limit to important images/maps
+        #cv2.imshow("Rod response", self.images['Rod'])
+        #for coneType, coneImage in self.images['Cone'].iteritems():
+        #  cv2.imshow("{} Cones".format(coneType), coneImage)
         for bipolarType, bipolarImage in self.images['Bipolar'].iteritems():
           cv2.imshow("{} Bipolar cells".format(bipolarType), bipolarImage)
         for ganglionType, ganglionImage in self.images['Ganglion'].iteritems():
