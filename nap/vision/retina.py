@@ -224,6 +224,7 @@ class Projector(FrameProcessor):
   """An input manager that correctly projects incoming images onto the retina, with a movable point of focus."""
   
   key_focus_jump = 10  # no. of pixels to shift focus under (manual) keyboard control
+  screen_background = np.uint8([128, 128, 128])
   
   def __init__(self, retina=None):
     FrameProcessor.__init__(self)
@@ -234,6 +235,7 @@ class Projector(FrameProcessor):
     self.screenSize = (self.imageSize[0] + 2 * self.retina.imageSize[0], self.imageSize[1] + 2 * self.retina.imageSize[1])  # create a screen which is big enough to accomodate input image and allow panning retina's focus to the edges
     self.logger.debug("Screen size: {}".format(self.screenSize))
     self.screen = np.zeros((self.screenSize[1], self.screenSize[0], 3), dtype=np.uint8)
+    self.screen[:, :] = self.screen_background
     self.updateImageRect()
     self.setFocus(self.screenSize[0] / 2, self.screenSize[1] / 2)  # calls updateFocusRect()
   

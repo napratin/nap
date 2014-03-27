@@ -18,6 +18,8 @@ class SalienceNeuron(Neuron):
   # Receptive field parameters
   rf_radius_range = Uniform(low=0.025, high=0.2)  # fraction of visual field size
   rf_center_radius_range = Uniform(low=(1.0 / sqrt(2.0)) * 0.9, high=(1.0 / sqrt(2.0)) * 1.1)  # fraction of receptive field radius (NOTE in order to ensure equal center and surround area, center radius must be about 1/sqrt(2) of outer radius; otherwise use mean when computing center-surround difference)
+  #rf_radius_range = Uniform(low=0.05, high=0.5)  # fraction of visual field size, largish, wide range
+  #rf_center_radius_range = Uniform(low=0.1, high=0.5)  # fraction of receptive field radius, smallish, wide range - not guaranteed to equalize center-surround areas
   
   # TODO Define types of salience neurons (feature-specific, and feature-agnostic) as tuple of feature neurons/maps to connect to
   

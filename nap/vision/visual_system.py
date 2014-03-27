@@ -101,9 +101,14 @@ class VisualSystem(object):
     self.images['Cone']['L'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
     
     # ** Bipolar cell response images
+    # NOTE Rod bipolars are ON-center only; they connect to OFF-center Ganglion cells to initiate the dark pathway
+    #      Here, an OFF map is computed from the ON map in order to simplify computation only
     self.images['Bipolar'] = OrderedDict()
     self.images['Bipolar']['ON'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
     self.images['Bipolar']['OFF'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
+    self.images['Bipolar']['S'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
+    self.images['Bipolar']['M'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
+    self.images['Bipolar']['L'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
     
     # ** Ganglion cell response images, the source of cortical feature channels
     # TODO Add more Ganglion cell types with different receptive field properties
@@ -117,12 +122,16 @@ class VisualSystem(object):
     #   'KW' +Black  -White (currently 'OFF')
     # NOTE R = L cones, G = M cones, B = S cones
     self.ganglionTypes = ['ON', 'OFF', 'RG', 'GR', 'RB', 'BR', 'BY', 'YB']
+    self.numGanglionTypes = np.int_(len(self.ganglionTypes))  # TODO use a single num-features parameter across the board?
+    self.numGanglionTypes_inv = 1.0 / self.imageTypeFloat(self.numGanglionTypes)  # [optimization: frequently used quantity]
     self.images['Ganglion'] = OrderedDict()
     for ganglionType in self.ganglionTypes:
       self.images['Ganglion'][ganglionType] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
     
-    # ** Combined response (salience) image
+    # ** Combined response (salience) image (and related variables)
     self.images['Salience'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
+    self.maxSalience = 0.0
+    self.maxSalienceLoc = (-1, -1)
     
     # ** Spatial attention map with a central (covert) spotlight (currently unused; TODO move to VisualCortex? also, use np.ogrid?)
     #self.image['Attention'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
@@ -130,7 +139,7 @@ class VisualSystem(object):
     #self.image['Attention'] = cv2.blur(self.image['Attention'], (self.imageSize[0] / 4, self.imageSize[0] / 4))  # coarse blur
     
     # * Image processing elements
-    self.bipolarBlurSize = (5, 5)  # size of blurring kernel used when computing Bipolar cell response
+    self.bipolarBlurSize = (11, 11)  # size of blurring kernel used when computing Bipolar cell response
     self.ganglionCenterSurroundKernel = self.imageTypeFloat(
       [ [ -1, -1, -1, -1, -1, -1, -1 ],
         [ -1, -1, -1, -1, -1, -1, -1 ],
@@ -188,15 +197,20 @@ class VisualSystem(object):
     self.images['Cone']['L'] = self.imageTypeFloat(180 - cv2.absdiff(self.images['H'], Cone.cone_types[2].hue) % 180) * self.images['S'] * self.images['V'] * Cone.cone_types[2].responseFactor
     
     # * Compute Bipolar and Ganglion cell responses
-    # ** Blurring is a step that is effectively achieved in biology by horizontal cells
+    # ** Bipolar responses: Rods 
+    # NOTE Blurring is a step that is effectively achieved in biology by horizontal cells
     imageRodBlurred = cv2.blur(self.images['Rod'], self.bipolarBlurSize)
     self.images['Bipolar']['ON'] = np.clip(self.images['Rod'] - 0.75 * imageRodBlurred, 0.0, 1.0)
-    self.images['Bipolar']['OFF'] = np.clip((1.0 - self.images['Rod']) - 0.75 * (1.0 - imageRodBlurred), 0.0, 1.0)  # same as (1 - ON response)?
+    self.images['Bipolar']['OFF'] = np.clip((1.0 - self.images['Rod']) - 0.75 * (1.0 - imageRodBlurred), 0.0, 1.0)  # same as (1 - ON response)? (nope)
     
-    # TODO Add multiscale Cone Bipolars to prevent unwanted response to diffuse illumination (also, Rod bipolars are ON-center only, so we don't need the OFF channel)
-    #imagesConeSBlurred = cv2.blur(self.images['Cone']['S'], self.bipolarBlurSize)
-    #imagesConeMBlurred = cv2.blur(self.images['Cone']['M'], self.bipolarBlurSize)
-    #imagesConeLBlurred = cv2.blur(self.images['Cone']['L'], self.bipolarBlurSize)
+    # ** Bipolar responses: Cones
+    # TODO Add multiscale Cone Bipolars to prevent unwanted response to diffuse illumination
+    imagesConeSBlurred = cv2.blur(self.images['Cone']['S'], self.bipolarBlurSize)
+    imagesConeMBlurred = cv2.blur(self.images['Cone']['M'], self.bipolarBlurSize)
+    imagesConeLBlurred = cv2.blur(self.images['Cone']['L'], self.bipolarBlurSize)
+    self.images['Bipolar']['S'] = np.clip(self.images['Cone']['S'] - 0.75 * imagesConeSBlurred, 0.0, 1.0)
+    self.images['Bipolar']['M'] = np.clip(self.images['Cone']['M'] - 0.75 * imagesConeMBlurred, 0.0, 1.0)
+    self.images['Bipolar']['L'] = np.clip(self.images['Cone']['L'] - 0.75 * imagesConeLBlurred, 0.0, 1.0)
     
     # ** Ganglion cells simply add up responses from a (bunch of) central bipolar cell(s) (ON/OFF) and surrounding antagonistic bipolar cells (OFF/ON)
     
@@ -217,9 +231,9 @@ class VisualSystem(object):
       self.images['Ganglion']['ON'] = np.maximum(self.images['Ganglion']['ON'], np.clip(cv2.filter2D(self.images['Bipolar']['ON'], -1, k), 0.0, 1.0))
       self.images['Ganglion']['OFF'] = np.maximum(self.images['Ganglion']['OFF'], np.clip(cv2.filter2D(self.images['Bipolar']['OFF'], -1, k), 0.0, 1.0))
       # Cone pathway
-      imageRG = self.images['Cone']['L'] - self.images['Cone']['M']
-      imageRB = self.images['Cone']['L'] - self.images['Cone']['S']
-      imageBY = self.images['Cone']['S'] - (self.images['Cone']['L'] + self.images['Cone']['M']) / 2
+      imageRG = self.images['Bipolar']['L'] - self.images['Bipolar']['M']
+      imageRB = self.images['Bipolar']['L'] - self.images['Bipolar']['S']
+      imageBY = self.images['Bipolar']['S'] - (self.images['Bipolar']['L'] + self.images['Bipolar']['M']) / 2
       self.images['Ganglion']['RG'] = np.maximum(self.images['Ganglion']['RG'], np.clip(cv2.filter2D(imageRG, -1, k), 0.0, 1.0))
       self.images['Ganglion']['GR'] = np.maximum(self.images['Ganglion']['GR'], np.clip(cv2.filter2D(-imageRG, -1, k), 0.0, 1.0))
       self.images['Ganglion']['RB'] = np.maximum(self.images['Ganglion']['RB'], np.clip(cv2.filter2D(imageRB, -1, k), 0.0, 1.0))
@@ -233,9 +247,15 @@ class VisualSystem(object):
     for ganglionType, ganglionImage in self.images['Ganglion'].iteritems():
       #self.images['Salience'] = np.maximum(self.images['Salience'], ganglionImage)
       #self.logger.debug("[Salience] Combining {}".format(self.featurePathways[ganglionType]))  # [verbose]
-      self.images['Salience'] = np.maximum(self.images['Salience'], np.sqrt(self.featurePathways[ganglionType].p) * ganglionImage)  # scaled by feature pathway probabilities (for display only)
+      self.images['Salience'] = np.maximum(self.images['Salience'], np.sqrt(self.featurePathways[ganglionType].p) * ganglionImage)  # take maximum, scaled by feature pathway probabilities (for display only)
+      #self.images['Salience'] = self.images['Salience'] + (self.numGanglionTypes_inv * np.sqrt(self.featurePathways[ganglionType].p) * ganglionImage)  # take normalized sum (mixes up features), scaled by feature pathway probabilities (for display only)
     
+    self.images['Salience'] = cv2.blur(self.images['Salience'], (3, 3))  # blur slightly to smooth out specs
     #self.images['Salience'] *= self.image['Attention']  # TODO evaluate if this is necessary
+    _, self.maxSalience, _, self.maxSalienceLoc = cv2.minMaxLoc(self.images['Salience'])  # find out most salient location (from combined salience map)
+    #self.logger.debug("Max. salience value: {:5.3f} @ {}".format(self.maxSalience, self.maxSalienceLo))  # [verbose]
+    if self.maxSalience < 0.66:
+      self.maxSalience = 0.0
     
     # * Compute features along each pathway
     for pathwayLabel, featurePathway in self.featurePathways.iteritems():
@@ -292,13 +312,15 @@ class VisualSystem(object):
             # Render salience neuron's receptive field with response-based pixel value (TODO cache int radii and pixel as tuple?)
             cv2.circle(self.imageSalienceOut, (salienceNeuron.pixel[0], salienceNeuron.pixel[1]), np.int_(salienceNeuron.rfRadius), 128)
             cv2.circle(self.imageSalienceOut, (salienceNeuron.pixel[0], salienceNeuron.pixel[1]), np.int_(salienceNeuron.rfCenterRadius), salienceNeuron.pixelValue, cv.CV_FILLED)
-          cv2.imshow("{} Salience".format(pathwayLabel), self.imageSalienceOut)
           
           # *** Selection neurons (TODO gather representative receptive field from source connections and cache it for use here, instead of using constant size?)
           #self.imageSelectionOut.fill(0.0)
+          cv2.circle(self.imageSalienceOut, (featurePathway.selectedNeuron.pixel[0], featurePathway.selectedNeuron.pixel[1]), self.imageSize[0] / 20, int(255 * exp(featurePathway.selectedTime - timeNow)), 3)  # draw selected neuron with a shade that fades with time (on salience output image)
           #cv2.circle(self.imageSelectionOut, (featurePathway.selectedNeuron.pixel[0], featurePathway.selectedNeuron.pixel[1]), self.imageSize[0] / 20, int(255 * exp(featurePathway.selectedTime - timeNow)), cv.CV_FILLED)  # draw selected neuron with a shade that fades with time
-          #cv2.imshow("{} Selection".format(pathwayLabel), self.imageSelectionOut)
           
+          cv2.imshow("{} Salience".format(pathwayLabel), self.imageSalienceOut)
+          #cv2.imshow("{} Selection".format(pathwayLabel), self.imageSelectionOut)
+    
     # * Update feature vector representing current state of neurons
     self.updateFeatureVector() 
     self.logger.debug("[{:.2f}] Features: {}".format(self.timeNow, self.featureVector))
@@ -310,6 +332,7 @@ class VisualSystem(object):
     
     # * Show output images if in GUI mode
     if self.context.options.gui:
+      cv2.imshow("Retina", self.images['BGR'])
       #cv2.imshow("Hue", self.images['H'])
       #cv2.imshow("Saturation", self.images['S'])
       #cv2.imshow("Value", self.images['V'])
@@ -325,8 +348,10 @@ class VisualSystem(object):
       cv2.imshow("Salience", self.images['Salience'])
       
       # Designate a representative output image
-      self.imageOut = self.images['Salience']
-      #_, self.imageOut = cv2.threshold(self.imageOut, 0.15, 1.0, cv2.THRESH_TOZERO)  # apply threshold to remove low-response regions
+      self.imageOut = self.images['Salience']  # make a copy?
+      if self.maxSalience >= 0.66:
+        cv2.circle(self.imageOut, self.maxSalienceLoc, int(self.maxSalience * 25), int(128 + self.maxSalience * 127), 1 + int(self.maxSalience * 4))  # mark most salient location: larger, fatter, brighter for higher salience value
+      _, self.imageOut = cv2.threshold(self.imageOut, 0.5, 1.0, cv2.THRESH_TOZERO)  # apply threshold to remove low-response regions
   
   def stop(self):
     # TODO Ensure this gets called for proper clean-up, esp. now that we are using an animated plot
