@@ -515,6 +515,12 @@ class FeatureManager(VisionManager):
     self.logger.debug("[{:.2f}] Transitioning from {} to {} state after {:.2f}s".format(timeNow, self.State.toString(self.state), self.State.toString(next_state), (timeNow - self.timeStateChange)))
     self.state = next_state
     self.timeStateChange = timeNow
+  
+  def getState(self):
+    return self.State.toString(self.state)
+  
+  def getFeatureVector(self):
+    return self.featureVectorMean.tolist()
 
 
 def test_VisualSystem():
@@ -523,5 +529,72 @@ def test_VisualSystem():
   run(VisionManager, description="Test application that uses a SimplifiedProjector to run image input through a VisualSystem instance.")
 
 
+def test_FeatureManager_RPC():
+  from time import sleep
+  from threading import Thread
+  import zmq
+  import json
+  from lumos import rpc
+  
+  Context.createInstance()
+  print "test_FeatureManager_RPC(): Creating visual system and manager"
+  visSystem = VisualSystem()
+  visManager = FeatureManager(visSystem)
+  
+  print "test_FeatureManager_RPC(): Exporting RPC calls"
+  rpc.enable(visManager.getState)
+  rpc.enable(visManager.getFeatureVector)
+  rpc.export(visManager)
+  rpc.refresh()
+  
+  print "test_FeatureManager_RPC(): Starting RPC server thread"
+  rpcServerThread = Thread(target=rpc.start, name="RPCServer")
+  rpcServerThread.daemon=True
+  rpcServerThread.start()
+  sleep(0.01)  # let new thread start
+  
+  rpc_client_recv_timeout = 2000
+  rpc_client_loop_flag = True
+  def rpcClient():
+    addr = "{}://{}:{}".format(rpc.default_protocol, "127.0.0.1", rpc.default_port)
+    c = zmq.Context()
+    s = c.socket(zmq.REQ)
+    s.setsockopt(zmq.RCVTIMEO, rpc_client_recv_timeout)
+    s.connect(addr)
+    print "rpcClient(): Connected to:", addr
+    while rpc_client_loop_flag:
+      try:
+        for req in ["FeatureManager.getState", "FeatureManager.getFeatureVector"]:
+          print "rpcClient(): REQ:", req
+          s.send(req, copy=False)
+          rep = s.recv(copy=False)
+          print "rpcClient(): REP:", rep
+          sleep(1.0)
+      except (KeyboardInterrupt, EOFError):
+        break
+    s.close()
+    c.term()
+    print "rpcClient(): Done."
+  
+  print "test_FeatureManager_RPC(): Starting RPC client thread"
+  rpcClientThread = Thread(target=rpcClient, name="RPCClient")
+  rpcClientThread.daemon=True
+  rpcClientThread.start()
+  sleep(0.01)  # let new thread start
+  
+  print "test_FeatureManager_RPC(): Starting vision loop"
+  run(visManager)
+  print "test_FeatureManager_RPC(): Vision loop done; waiting for RPC threads to join..."
+  rpc_client_loop_flag = False
+  rpcClientThread.join(rpc_client_recv_timeout + 1.0)
+  print "test_FeatureManager_RPC(): RPC client thread joined (or timeout)"
+  rpc.stop()
+  rpcServerThread.join(rpc.recv_timeout + 1.0)
+  print "test_FeatureManager_RPC(): RPC server thread joined (or timeout)"
+  print "test_FeatureManager_RPC(): Done."
+  
+
+
 if __name__ == "__main__":
-  test_VisualSystem()
+  #test_VisualSystem()
+  test_FeatureManager_RPC()
