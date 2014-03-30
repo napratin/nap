@@ -10,7 +10,7 @@ from collections import OrderedDict
 #import pyNN.neuron as sim
 from lumos.context import Context
 from lumos.util import Enum
-from lumos.input import InputDevice, run
+from lumos.input import run
 
 from ..neuron import Neuron, Population, Projection, neuron_inhibition_period, Uniform, MultivariateUniform, NeuronMonitor, plotPopulations
 from .photoreceptor import Rod, Cone
@@ -171,7 +171,7 @@ class VisualSystem(object):
     
     # * Output image and plots
     if self.context.options.gui:
-      #self.imageOut = np.zeros(self.imageShapeC3, dtype=self.imageTypeInt)
+      self.imageOut = None  # np.zeros(self.imageShapeC3, dtype=self.imageTypeInt)
       # TODO Salience and selection output will be for each feature pathway
       self.imageSalienceOut = np.zeros(self.imageShapeC1, dtype=self.imageTypeInt)  # salience neuron outputs
       self.imageSelectionOut = np.zeros(self.imageShapeC1, dtype=self.imageTypeInt)  # selection neuron outputs
@@ -449,6 +449,16 @@ class VisualSystem(object):
   def addProjection(self, projection):
     self.projections.append(projection)
     return projection
+  
+  def getInputImage(self):
+    return self.images['BGR']
+  
+  def getOutputImage(self):
+    if self.context.options.gui:
+      return self.imageOut
+    else:
+      return None
+
 
 
 class VisionManager(SimplifiedProjector):
@@ -531,9 +541,7 @@ def test_VisualSystem():
 
 def test_FeatureManager_RPC():
   from time import sleep
-  from threading import Thread
-  import zmq
-  import json
+  from multiprocessing import Process, Value
   from lumos import rpc
   
   Context.createInstance()
@@ -542,59 +550,63 @@ def test_FeatureManager_RPC():
   visManager = FeatureManager(visSystem)
   
   print "test_FeatureManager_RPC(): Exporting RPC calls"
+  rpc.export(visSystem)  # order of export vs. enable doesn't matter - everything will be resolved in refresh(), called by start_server()
+  rpc.enable_image(visSystem.getInputImage)
+  rpc.enable_image(visSystem.getOutputImage)
+  rpc.export(visManager)
   rpc.enable(visManager.getState)
   rpc.enable(visManager.getFeatureVector)
-  rpc.export(visManager)
-  rpc.refresh()
   
   print "test_FeatureManager_RPC(): Starting RPC server thread"
-  rpcServerThread = Thread(target=rpc.start, name="RPCServer")
-  rpcServerThread.daemon=True
-  rpcServerThread.start()
-  sleep(0.01)  # let new thread start
+  rpcServerThread = rpc.start_server_thread(daemon=True)
   
-  rpc_client_recv_timeout = 2000
-  rpc_client_loop_flag = True
-  def rpcClient():
-    addr = "{}://{}:{}".format(rpc.default_protocol, "127.0.0.1", rpc.default_port)
-    c = zmq.Context()
-    s = c.socket(zmq.REQ)
-    s.setsockopt(zmq.RCVTIMEO, rpc_client_recv_timeout)
-    s.connect(addr)
-    print "rpcClient(): Connected to:", addr
-    while rpc_client_loop_flag:
-      try:
-        for req in ["FeatureManager.getState", "FeatureManager.getFeatureVector"]:
-          print "rpcClient(): REQ:", req
-          s.send(req, copy=False)
-          rep = s.recv(copy=False)
-          print "rpcClient(): REP:", rep
-          sleep(1.0)
-      except (KeyboardInterrupt, EOFError):
-        break
-    s.close()
-    c.term()
-    print "rpcClient(): Done."
+  # NOTE shared_loop_flag must be a multiprocessing.Value or .RawValue
+  # NOTE gui should be set to true only if this is being run in its own dedicated process, without any shared GUI infrastructure
+  def rpcClientLoop(shared_loop_flag, gui=False):
+    with rpc.Client() as rpcClient:
+      while shared_loop_flag.value == 1:
+        try:
+          for call in ['FeatureManager.getState', 'FeatureManager.getFeatureVector']:  # 'VisualSystem.getOutputImage'
+            print "[RPC-Client] REQ:", call
+            retval = rpcClient.call(call)
+            if isinstance(retval, np.ndarray):
+              print "[RPC-Client] REP[image]: shape: {}, dtype: {}".format(retval.shape, retval.dtype)
+              # NOTE Qt (and possibly other backends) can only display from the main thread of a process
+              if gui:
+                cv2.imshow("VisualSystem output", retval)
+                cv2.waitKey(10)
+            else:
+              print "[RPC-Client] REP:", retval
+            if retval is None:
+              break
+            sleep(0.5)  # small sleep to prevent flooding
+          sleep(0.5)  # extra sleep after each state, vector pair
+        except KeyboardInterrupt:
+          break
   
-  print "test_FeatureManager_RPC(): Starting RPC client thread"
-  rpcClientThread = Thread(target=rpcClient, name="RPCClient")
-  rpcClientThread.daemon=True
-  rpcClientThread.start()
-  sleep(0.01)  # let new thread start
+  print "test_FeatureManager_RPC(): Starting RPC client process"
+  rpc_client_loop_flag = Value('i', 1)
+  # NOTE No GUI output possible from child process; this will simply print metadata for any images received
+  rpcClientProcess = Process(target=rpcClientLoop, name="RPC-Client", args=(rpc_client_loop_flag,))
+  rpcClientProcess.daemon=True
+  rpcClientProcess.start()
+  sleep(0.01)  # let new process start
   
   print "test_FeatureManager_RPC(): Starting vision loop"
   run(visManager)
-  print "test_FeatureManager_RPC(): Vision loop done; waiting for RPC threads to join..."
-  rpc_client_loop_flag = False
-  rpcClientThread.join(rpc_client_recv_timeout + 1.0)
-  print "test_FeatureManager_RPC(): RPC client thread joined (or timeout)"
-  rpc.stop()
-  rpcServerThread.join(rpc.recv_timeout + 1.0)
+  print "test_FeatureManager_RPC(): Vision loop done; waiting for RPC threads/processes to join..."
+  rpc_client_loop_flag.value = 0
+  if rpc.Client.recv_timeout is not None:  # just a guess, actual timeout used could be different
+    rpcClientProcess.join(rpc.Client.recv_timeout / 1000.0 + 1.0)
+  print "test_FeatureManager_RPC(): RPC client process joined (or timeout)"
+  rpc.stop_server()
+  if rpc.Server.recv_timeout is not None:  # just a guess, actual timeout used could be different
+    rpcServerThread.join(rpc.Server.recv_timeout / 1000.0 + 1.0)
   print "test_FeatureManager_RPC(): RPC server thread joined (or timeout)"
   print "test_FeatureManager_RPC(): Done."
-  
 
 
+# Testing
 if __name__ == "__main__":
   #test_VisualSystem()
   test_FeatureManager_RPC()
