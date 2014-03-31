@@ -1,14 +1,10 @@
-"""Simplified model of the visual cortex with appropriate neuron types."""
+"""Functional models of neurons from the visual cortex."""
 
 from math import exp, sqrt
 import numpy as np
-import cv2
-import cv2.cv as cv
 
-from lumos.input import run
+from ...neuron import Neuron, threshold_potential, action_potential_peak, action_potential_trough, refractory_period, Uniform
 
-from ...neuron import Neuron, Population, threshold_potential, action_potential_peak, action_potential_trough, refractory_period, neuron_inhibition_period, Uniform, MultivariateUniform, MultivariateNormal, plotPopulations
-from .retina import Retina, SimplifiedProjector
 
 class SalienceNeuron(Neuron):
   """A spiking neuron that responds to center-surround contrast in its receptive field."""
@@ -171,103 +167,3 @@ class FeatureNeuron(Neuron):
     self.pixelValue = int(np.clip(abs(self.potential - self.resting_potential.mu) * self.potential_scale, 0, 255))
     
     self.sendGradedPotential()
-
-
-# TODO Define VisualCortex class that would contain the different cortical layers and expose an interface to the visual system (with retina passed in through context? or context.systems/context.components?)
-
-
-class CorticalProjector(SimplifiedProjector):
-  """A SimplifiedProjector-based type that runs visual input through a simplified Retina as well as higher cortical layers."""
-  
-  num_salience_neurons = 400
-  num_selection_neurons = 100
-  
-  def __init__(self, retina=None):
-    SimplifiedProjector.__init__(self, retina if retina is not None else Retina())
-    
-    # * Create layers of cortical neurons (TODO move this to VisualCortex; rename e.g. salienceNeurons -> populations['Salience'] for salience population, and with that neuron.Population -> neuron.Population)
-    # ** Salience neurons (TODO introduce magno and parvo types)
-    self.salienceLayerBounds = np.float32([[0.0, 0.0, 0.0], [self.retina.imageSize[0] - 1, self.retina.imageSize[1] - 1, 0.0]])
-    #self.salienceNeuronDistribution = MultivariateNormal(mu=self.retina.center, cov=(np.float32([self.retina.center[0] ** 2, self.retina.center[0] ** 2, 1.0]) * np.identity(3, dtype=np.float32)))
-    self.salienceNeuronDistribution = MultivariateUniform(lows=[0.0, 0.0, 0.0], highs=[self.retina.imageSize[1], self.retina.imageSize[0], 0.0])
-    self.salienceNeurons = Population(numNeurons=self.num_salience_neurons, timeNow=0.0, neuronTypes=[SalienceNeuron], bounds=self.salienceLayerBounds, distribution=self.salienceNeuronDistribution, retina=self.retina)  # TODO use timeNow when moved to VisualCortex
-    self.salienceNeuronPlotColor = 'coral'
-    
-    # ** Selection neurons
-    self.selectionLayerBounds = np.float32([[0.0, 0.0, 50.0], [self.retina.imageSize[0] - 1, self.retina.imageSize[1] - 1, 50.0]])
-    self.selectionNeuronDistribution = MultivariateUniform(lows=[0.0, 0.0, 50.0], highs=[self.retina.imageSize[1], self.retina.imageSize[0], 50.0])
-    self.selectionNeurons = Population(numNeurons=self.num_selection_neurons, timeNow=0.0, neuronTypes=[SelectionNeuron], bounds=self.selectionLayerBounds, distribution=self.selectionNeuronDistribution, retina=self.retina)  # TODO use timeNow when moved to VisualCortex
-    self.selectionNeuronPlotColor = 'olive'
-    
-    # * Connect neuron layers
-    # ** Salience neurons to selection neurons
-    self.salienceNeurons.connectWith(self.selectionNeurons, maxConnectionsPerNeuron=5)
-    
-    # ** Selection neurons to themselves (lateral inhibition; TODO make this a function in Projection)
-    for source in self.selectionNeurons.neurons:
-      for target in self.selectionNeurons.neurons:
-        if source == target: continue
-        source.gateNeuron(target)
-    
-    # * Show neuron layers and connections [debug]
-    #plotPopulations([self.salienceNeurons, self.selectionNeurons], populationColors=[self.salienceNeuronPlotColor, self.selectionNeuronPlotColor], showConnections=True, equalScaleZ=True)  # [debug]
-    
-    # * Top-level interface
-    self.selectedNeuron = None  # the last selected SelectionNeuron, mainly for display and top-level output
-    self.selectedTime = 0.0  # corresponding timestamp
-    
-    # * Allocate output images
-    self.imageSalienceOut = np.zeros((self.retina.imageSize[1], self.retina.imageSize[0]), dtype=np.uint8) if self.context.options.gui else None  # salience neuron outputs
-    self.imageSelectionOut = np.zeros((self.retina.imageSize[1], self.retina.imageSize[0]), dtype=np.uint8) if self.context.options.gui else None  # selection neuron outputs
-  
-  def process(self, imageIn, timeNow):
-    keepRunning, imageRetinaOut = SimplifiedProjector.process(self, imageIn, timeNow)
-    
-    # * Update cortical layers (TODO move this to VisualCortex.update())
-    # ** Salience neurons
-    for salienceNeuron in self.salienceNeurons.neurons:
-      salienceNeuron.update(timeNow)  # update every iteration
-      #salienceNeuron.updateWithP(timeNow)  # update probabilistically
-      #self.logger.debug("Salience neuron potential: {:.3f}, response: {:.3f}, I_e: {}, pixelValue: {}".format(salienceNeuron.potential, salienceNeuron.response, salienceNeuron.I_e, salienceNeuron.pixelValue))
-      
-    # ** Selection neurons (TODO mostly duplicated code, perhaps generalizable?)
-    for selectionNeuron in self.selectionNeurons.neurons:
-      selectionNeuron.update(timeNow)  # update every iteration
-      #selectionNeuron.updateWithP(timeNow)  # update probabilistically
-      #self.logger.debug("Selection neuron potential: {:.3f}, response: {:.3f}, pixelValue: {}".format(selectionNeuron.potential, selectionNeuron.response, selectionNeuron.pixelValue))
-    
-    # * Render output images and show them
-    if self.context.options.gui:
-      # ** Salience neurons
-      self.imageSalienceOut.fill(0.0)
-      for salienceNeuron in self.salienceNeurons.neurons:
-        # Render salience neuron's receptive field with response-based pixel value (TODO cache int radii and pixel as tuple?)
-        cv2.circle(self.imageSalienceOut, (salienceNeuron.pixel[0], salienceNeuron.pixel[1]), np.int_(salienceNeuron.rfRadius), 128)
-        cv2.circle(self.imageSalienceOut, (salienceNeuron.pixel[0], salienceNeuron.pixel[1]), np.int_(salienceNeuron.rfCenterRadius), salienceNeuron.pixelValue, cv.CV_FILLED)
-      cv2.imshow("Salience neurons", self.imageSalienceOut)
-      
-      # ** Selection neurons
-      #numUninhibited = 0  # [debug]
-      self.imageSelectionOut.fill(0.0)
-      for selectionNeuron in self.selectionNeurons.neurons:
-        # Render selection neuron's position with response-based pixel value (TODO build receptive field when synapses are made, or later, using a stimulus test phase?)
-        #if selectionNeuron.pixelValue > 200: print "[{:.2f}] {}".format(timeNow, selectionNeuron)  # [debug]
-        if not selectionNeuron.isInhibited:  # no point drawing black circles for inhibited neurons
-          #numUninhibited += 1  # [debug]
-          #cv2.circle(self.imageSelectionOut, (selectionNeuron.pixel[0], selectionNeuron.pixel[1]), self.imageSize[0] / 20, selectionNeuron.pixelValue, cv.CV_FILLED)  # only render the one selected neuron, later
-          self.selectedNeuron = selectionNeuron
-          self.selectedTime = timeNow
-          self.selectedNeuron.inhibit(timeNow, neuron_inhibition_period + 0.75)  # inhibit selected neuron for a bit longer
-          break  # first uninhibited SelectionNeuron will be our selected neuron
-      #print "# Uninhibited selection neurons: {}".format(numUninhibited)  # [debug]
-      cv2.circle(self.imageSelectionOut, (self.selectedNeuron.pixel[0], self.selectedNeuron.pixel[1]), self.imageSize[0] / 20, int(255 * exp(self.selectedTime - timeNow)), cv.CV_FILLED)  # draw selected neuron with a shade that fades with time (TODO more accurate receptive field?)
-      cv2.imshow("Selection neurons", self.imageSelectionOut)  # actually, just selected neuron
-      
-      # ** Final output image
-      self.imageOut = cv2.bitwise_and(self.retina.imageBGR, self.retina.imageBGR, mask=self.imageSelectionOut)
-    
-    return keepRunning, self.imageOut
-
-
-if __name__ == "__main__":
-  run(CorticalProjector, description="Process visual input through a (simplified) Retina and VisualCortex.")

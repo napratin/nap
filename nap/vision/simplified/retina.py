@@ -7,12 +7,12 @@ import cv2.cv as cv
 from collections import OrderedDict
 
 from lumos.context import Context
-from lumos.input import InputDevice, run
+from lumos.input import Projector, run
 
 from ..photoreceptor import Rod, Cone
-from ..retina import Projector
 
-class Retina:
+
+class Retina(object):
   """
   A multi-layered surface for hosting different types of neurons that make up a retina, simplified version.
   
@@ -113,11 +113,15 @@ class Retina:
     if self.context.options.gui:
       self.imageOut = np.zeros(self.imageShapeC3, dtype=self.imageTypeInt)
   
-  def update(self, timeNow):
+  def initialize(self, imageIn, timeNow):
+    pass  # to emulate FrameProcessor-like interface
+  
+  def process(self, imageIn, timeNow):
     self.timeNow = timeNow
     self.logger.debug("Retina update @ {}".format(self.timeNow))
     
     # * Get HSV
+    self.images['BGR'][:] = imageIn
     self.images['HSV'] = cv2.cvtColor(self.images['BGR'], cv2.COLOR_BGR2HSV)
     self.images['H'], self.images['S'], self.images['V'] = cv2.split(self.images['HSV'])
     
@@ -199,14 +203,10 @@ class Retina:
       # Designate a representative output image
       self.imageOut = self.imageSalience
       #_, self.imageOut = cv2.threshold(self.imageOut, 0.15, 1.0, cv2.THRESH_TOZERO)  # apply threshold to remove low-response regions
-
-
-class SimplifiedProjector(Projector):
-  """A version of Projector that uses a simplified Retina."""
-  
-  def __init__(self, retina=None):
-    Projector.__init__(self, retina if retina is not None else Retina())
+    
+    return True, self.imageOut
 
 
 if __name__ == "__main__":
-  run(SimplifiedProjector, description="Test application that uses a SimplifiedProjector to run image input through a (simplified) Retina.")
+  Context.createInstance(description="Test application that uses a SimplifiedProjector to run image input through a (simplified) Retina.")
+  run(Projector(Retina()))

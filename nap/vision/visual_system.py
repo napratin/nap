@@ -10,13 +10,12 @@ from collections import OrderedDict
 #import pyNN.neuron as sim
 from lumos.context import Context
 from lumos.util import Enum
-from lumos.input import run
+from lumos.input import Projector, run
 from lumos import rpc
 
 from ..util.buffer import InputBuffer, OutputBuffer, BidirectionalBuffer, BufferAccessError
 from ..neuron import Neuron, Population, Projection, neuron_inhibition_period, Uniform, MultivariateUniform, NeuronMonitor, plotPopulations
 from .photoreceptor import Rod, Cone
-from .simplified.retina import SimplifiedProjector
 from .simplified.visual_cortex import SalienceNeuron, SelectionNeuron, FeatureNeuron
 
 
@@ -179,8 +178,9 @@ class VisualSystem(object):
     self.createVisualCortex()  # creates and populates self.featurePathways
     
     # * Output image and plots
+    self.imageOut = None
     if self.context.options.gui:
-      self.imageOut = None  # np.zeros(self.imageShapeC3, dtype=self.imageTypeInt)
+      #self.imageOut = np.zeros(self.imageShapeC3, dtype=self.imageTypeInt)
       # TODO Salience and selection output will be for each feature pathway
       self.imageSalienceOut = np.zeros(self.imageShapeC1, dtype=self.imageTypeInt)  # salience neuron outputs
       self.imageSelectionOut = np.zeros(self.imageShapeC1, dtype=self.imageTypeInt)  # selection neuron outputs
@@ -206,7 +206,10 @@ class VisualSystem(object):
     # * Once initialized, start in FREE state
     self.transition(self.State.FREE)
   
-  def update(self, timeNow):
+  def initialize(self, imageIn, timeNow):
+    pass  # to emulate FrameProcessor-like interface
+  
+  def process(self, imageIn, timeNow):
     self.timeNow = timeNow
     
     # * TODO Read input buffers
@@ -215,6 +218,7 @@ class VisualSystem(object):
       self.updateFeatureWeights(weights)
     
     # * Get HSV
+    self.images['BGR'] = imageIn
     self.images['HSV'] = cv2.cvtColor(self.images['BGR'], cv2.COLOR_BGR2HSV)
     self.images['H'], self.images['S'], self.images['V'] = cv2.split(self.images['HSV'])
     
@@ -386,6 +390,8 @@ class VisualSystem(object):
       if self.maxSalience >= 0.66:
         cv2.circle(self.imageOut, self.maxSalienceLoc, int(self.maxSalience * 25), int(128 + self.maxSalience * 127), 1 + int(self.maxSalience * 4))  # mark most salient location: larger, fatter, brighter for higher salience value
       _, self.imageOut = cv2.threshold(self.imageOut, 0.5, 1.0, cv2.THRESH_TOZERO)  # apply threshold to remove low-response regions
+    
+    return True, self.imageOut
   
   def stop(self):
     # TODO Ensure this gets called for proper clean-up, esp. now that we are using an animated plot
@@ -551,11 +557,11 @@ class VisualSystem(object):
       return None
 
 
-class VisionManager(SimplifiedProjector):
-  """A version of Projector that uses a simplified Retina and layers from the visual cortex for visual processing."""
+class VisionManager(Projector):
+  """A version of Projector that defaults to using a VisualSystem as target."""
   
-  def __init__(self, retina=None):
-    SimplifiedProjector.__init__(self, retina if retina is not None else VisualSystem())
+  def __init__(self, target=None):
+    Projector.__init__(self, target if target is not None else VisualSystem())
 
 
 class FeatureManager(VisionManager):

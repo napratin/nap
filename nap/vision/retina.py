@@ -1,4 +1,4 @@
-"""Basic retina model."""
+"""Basic target model."""
 
 import logging
 from math import sqrt
@@ -12,8 +12,7 @@ import cv2
 from collections import OrderedDict
 
 from lumos.context import Context
-from lumos.base import FrameProcessor
-from lumos.input import InputDevice, run
+from lumos.input import Projector, run
 
 from matplotlib.pyplot import figure, show, hold, pause
 from matplotlib.colors import hsv_to_rgb
@@ -23,8 +22,9 @@ from ..neuron import Neuron, Population, GrowthCone, MultivariateNormal, Symmetr
 from .photoreceptor import Rod, Cone
 from .bipolar import BipolarCell
 
-class Retina:
-  """A multi-layered surface for hosting different types of neurons that make up a retina.
+
+class Retina(object):  # should we ihherit from FrameProcessor?
+  """A multi-layered surface for hosting different types of neurons that make up a target.
   
   [Deprecated] Use VisualSystem instead.
   
@@ -78,6 +78,7 @@ class Retina:
     self.imagesCone['L'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
     
     # ** Output image(s)
+    self.imageOut = None
     if self.context.options.gui:
       self.imageOut = np.zeros(self.imageShapeC3, dtype=self.imageTypeInt)
       self.imagesBipolar = dict()
@@ -100,9 +101,13 @@ class Retina:
     self.rods.connectWith(self.bipolarCells, maxConnectionsPerNeuron=25, growthCone=GrowthCone(growthConeDirection, spreadFactor=1))
     # TODO Connection currently takes a long time; speed this up with better parameterization and spatial search
   
-  def update(self, timeNow):
+  def initialize(self, imageIn, timeNow):
+    pass  # to emulate FrameProcessor-like interface
+  
+  def process(self, imageIn, timeNow):
     self.timeNow = timeNow
     self.logger.debug("Retina update @ {}".format(self.timeNow))
+    self.images['BGR'][:] = imageIn
     self.images['HSV'] = cv2.cvtColor(self.images['BGR'], cv2.COLOR_BGR2HSV)
     self.images['H'], self.images['S'], self.images['V'] = cv2.split(self.images['HSV'])
     # TODO Need non-linear response to hue, sat, val (less dependent on sat, val for cones)
@@ -133,6 +138,8 @@ class Retina:
     if self.context.options.gui:
       cv2.imshow("ON Bipolar cells", self.imagesBipolar['ON'])
       cv2.imshow("OFF Bipolar cells", self.imagesBipolar['OFF'])
+    
+    return True, self.imageOut
   
   def plotPhotoreceptors3D(self):
     plotPopulations([self.rods, self.cones, self.bipolarCells], populationColors=[self.rodPlotColor, self.conePlotColor, self.bipolarCellPlotColor], showConnections=True, equalScaleZ=True)
@@ -164,7 +171,7 @@ class Retina:
     #n, bins, patches = hist([rodLocsInStrip[:, 0].T, coneLocsInStrip[:, 0].T], bins=100, range=(self.bounds[0, 0], self.bounds[1, 0]), color=[self.rodPlotColor, self.conePlotColor], alpha=0.5, histtype='stepfilled', label=['Rods', 'Cones'])  # combined
     ax.set_xlabel("Position (pixels)")
     ax.set_ylabel("Density (# per {:.2f}*{:.2f} pixel^2 area)".format(cellWidth, cellHeight))
-    ax.set_title("Photoreceptor density in simulated retina")
+    ax.set_title("Photoreceptor density in simulated target")
     ax.legend()
     
     if standalone:
@@ -189,7 +196,7 @@ class Retina:
     nums, bins, patches = ax.hist(coneHuesByType, bins=numBins, range=(0, 180), color=self.conePlotColorsByType, alpha=0.8, histtype='stepfilled', label='Cone types')
     ax.set_xlabel("Hue (degrees, 0..180)")
     ax.set_ylabel("Count (# of cones)")
-    ax.set_title("Cone sensitivity distribution in simulated retina")
+    ax.set_title("Cone sensitivity distribution in simulated target")
     ax.legend([coneType.name for coneType in Cone.cone_types])
     
     # Plot histogram of cone sensitivities (frequencies)
@@ -199,7 +206,7 @@ class Retina:
     ax.set_ylim([0, np.max(nums) + 1])  # NOTE this shouldn't be needed, but without it Y-axis is not getting scaled properly
     ax.set_xlabel("Frequency (nm)")
     ax.set_ylabel("Count (# of cones)")
-    ax.set_title("Cone sensitivity distribution in simulated retina")
+    ax.set_title("Cone sensitivity distribution in simulated target")
     ax.legend([coneType.name for coneType in Cone.cone_types])
     '''
     # Plot histogram of cone sensitivities (frequency responses)
@@ -220,77 +227,6 @@ class Retina:
       show()
 
 
-class Projector(FrameProcessor):
-  """An input manager that correctly projects incoming images onto the retina, with a movable point of focus."""
-  
-  key_focus_jump = 10  # no. of pixels to shift focus under (manual) keyboard control
-  screen_background = np.uint8([128, 128, 128])
-  
-  def __init__(self, retina=None):
-    FrameProcessor.__init__(self)
-    self.retina = retina if retina is not None else Retina()
-  
-  def initialize(self, imageIn, timeNow):
-    FrameProcessor.initialize(self, imageIn, timeNow)
-    self.screenSize = (self.imageSize[0] + 2 * self.retina.imageSize[0], self.imageSize[1] + 2 * self.retina.imageSize[1])  # create a screen which is big enough to accomodate input image and allow panning retina's focus to the edges
-    self.logger.debug("Screen size: {}".format(self.screenSize))
-    self.screen = np.zeros((self.screenSize[1], self.screenSize[0], 3), dtype=np.uint8)
-    self.screen[:, :] = self.screen_background
-    self.updateImageRect()
-    self.setFocus(self.screenSize[0] / 2, self.screenSize[1] / 2)  # calls updateFocusRect()
-  
-  def process(self, imageIn, timeNow):
-    self.image = imageIn
-    self.timeNow = timeNow
-    # Copy image to screen, and part of screen to retina (TODO optimize this to a single step?)
-    self.screen[self.imageRect[2]:self.imageRect[3], self.imageRect[0]:self.imageRect[1]] = self.image
-    #if self.context.options.gui: cv2.imshow("Screen", self.screen)  # [debug]
-    self.retina.images['BGR'][:] = self.screen[self.focusRect[2]:self.focusRect[3], self.focusRect[0]:self.focusRect[1]]  # NOTE only compatible with VisualSystem
-    #if self.context.options.gui: cv2.imshow("Retina", self.retina.images['BGR'])  # [debug]
-    
-    self.retina.update(timeNow)
-    
-    if self.context.options.gui:
-      self.imageOut = self.retina.imageOut
-    return True, self.imageOut
-  
-  def onKeyPress(self, key, keyChar=None):
-    if keyChar == 'w':
-      self.shiftFocus(deltaY=-self.key_focus_jump)
-    elif keyChar == 's':
-      self.shiftFocus(deltaY=self.key_focus_jump)
-    elif keyChar == 'a':
-      self.shiftFocus(deltaX=-self.key_focus_jump)
-    elif keyChar == 'd':
-      self.shiftFocus(deltaX=self.key_focus_jump)
-    elif keyChar == 'c':
-      self.setFocus(self.screenSize[0] / 2, self.screenSize[1] / 2)
-    return True
-  
-  def updateImageRect(self):
-    # Compute image rect bounds - constant screen area where image is copied: (left, right, top, bottom)
-    # TODO Ensure rect format (left, right, top, bottom) doesn't clash with OpenCV convention (left, top, width, height)
-    #      Or, create a versatile utility class Rect with appropriate properties and conversions
-    left = self.screenSize[0] / 2 - self.imageSize[0] / 2
-    top = self.screenSize[1] / 2 - self.imageSize[1] / 2
-    self.imageRect = np.int_([left, left + self.imageSize[0], top, top + self.imageSize[1]])
-    self.logger.debug("Image rect: {}".format(self.imageRect))
-  
-  def shiftFocus(self, deltaX=0, deltaY=0):
-    self.setFocus(self.focusPoint[0] + deltaX, self.focusPoint[1] + deltaY)
-  
-  def setFocus(self, x, y):
-    self.focusPoint = (np.clip(x, self.imageRect[0], self.imageRect[1] - 1), np.clip(y, self.imageRect[2], self.imageRect[3] - 1))
-    self.updateFocusRect()
-  
-  def updateFocusRect(self):
-    # Compute focus rect bounds - varying screen area that is copied to retina: (left, right, top, bottom)
-    left = self.focusPoint[0] - self.retina.imageSize[0] / 2
-    top = self.focusPoint[1] - self.retina.imageSize[1] / 2
-    self.focusRect = np.int_([left, left + self.retina.imageSize[0], top, top + self.retina.imageSize[1]])
-    self.logger.debug("Focus rect: {}".format(self.focusRect))
-
-
 class TestRetina(TestCase):
   # TODO Move to nap.vision.tests?
   def setUp(self):
@@ -303,7 +239,7 @@ class TestRetina(TestCase):
     retina.plotConeSensitivities()
   
   def test_projector(self):
-    run(Projector, description="Test application that uses a Projector to run image input through a Retina.")
+    run(Projector(Retina()), description="Test application that uses a Projector to run image input through a Retina.")
   
   def test_rod_potential(self):
     from ..neuron import action_potential_trough, action_potential_peak
@@ -315,7 +251,7 @@ class TestRetina(TestCase):
         
         # Neuron to monitor
         self.testRodIdx = 0
-        self.testRod = self.retina.rods.neurons[self.testRodIdx]
+        self.testRod = self.target.rods.neurons[self.testRodIdx]
         self.logger.info("Test rod [{}]: {}".format(self.testRodIdx, self.testRod))
         
         # Plotting
@@ -343,19 +279,19 @@ class TestRetina(TestCase):
       
       def onKeyPress(self, key, keyChar=None):
         if keyChar == '.':
-          self.testRodIdx = (self.testRodIdx + 1) % len(self.retina.rods.neurons)
-          self.testRod = self.retina.rods.neurons[self.testRodIdx]
+          self.testRodIdx = (self.testRodIdx + 1) % len(self.target.rods.neurons)
+          self.testRod = self.target.rods.neurons[self.testRodIdx]
           self.logger.info("[>] Test rod [{}]: {}".format(self.testRodIdx, self.testRod))
         elif keyChar == ',':
-          self.testRodIdx = (self.testRodIdx - 1) % len(self.retina.rods.neurons)
-          self.testRod = self.retina.rods.neurons[self.testRodIdx]
+          self.testRodIdx = (self.testRodIdx - 1) % len(self.target.rods.neurons)
+          self.testRod = self.target.rods.neurons[self.testRodIdx]
           self.logger.info("[<] Test rod [{}]: {}".format(self.testRodIdx, self.testRod))
         else:
           return Projector.onKeyPress(self, key, keyChar)
         return True
     
     print "Running MonitoringProjector instance..."
-    run(MonitoringProjector, description="Retina processing with monitor on a single neuron.")
+    run(MonitoringProjector(Projector), description="Retina processing with monitor on a single neuron.")
 
 
 if __name__ == "__main__":
