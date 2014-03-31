@@ -11,7 +11,9 @@ from collections import OrderedDict
 from lumos.context import Context
 from lumos.util import Enum
 from lumos.input import run
+from lumos import rpc
 
+from ..util.buffer import InputBuffer, OutputBuffer, BidirectionalBuffer, BufferAccessError
 from ..neuron import Neuron, Population, Projection, neuron_inhibition_period, Uniform, MultivariateUniform, NeuronMonitor, plotPopulations
 from .photoreceptor import Rod, Cone
 from .simplified.retina import SimplifiedProjector
@@ -62,7 +64,10 @@ class VisualSystem(object):
   num_salience_neurons = 400
   num_selection_neurons = 100
   
-  default_image_size = (256, 256)  # (width, height)
+  default_image_size = (256, 256)  # (width, height) TODO read from context options
+  
+  State = Enum(('NONE', 'FREE', 'SACCADE', 'FIXATE'))
+  intents = ['find']  # all supported intents
   
   def __init__(self, imageSize=default_image_size, timeNow=0.0, showMonitor=True):
     # * Get context and logger
@@ -72,6 +77,10 @@ class VisualSystem(object):
     # * Accept arguments, read parameters (TODO)
     self.imageSize = imageSize  # (width, height)
     self.timeNow = timeNow
+    
+    # * System state
+    self.state = self.State.NONE
+    self.lastTransitionTime = self.timeNow
     
     # * Structural/spatial members
     self.bounds = np.float32([[0.0, 0.0, 2.0], [self.imageSize[0] - 1, self.imageSize[1] - 1, 4.0]])
@@ -181,9 +190,29 @@ class VisualSystem(object):
         for pathwayLabel, featurePathway in self.featurePathways.iteritems():
           self.neuronPotentialMonitor.addChannel(label=pathwayLabel, obj=featurePathway.output.neurons[0], color=self.featurePlotColors[pathwayLabel])  # very hard-coded way to access single output neuron!
         self.neuronPotentialMonitor.start()
+    
+    # * Buffers - mainly for communication with high-level (cognitive) architectures, other modules
+    # TODO Initialize all buffers with proper values
+    self.buffers = OrderedDict()
+    self.buffers['state'] = OutputBuffer(self.state)
+    self.buffers['intent'] = InputBuffer(self.handleIntent)  # receive intent in a callable method
+    self.buffers['location'] = BidirectionalBuffer()
+    self.buffers['size'] = BidirectionalBuffer()
+    self.buffers['features'] = BidirectionalBuffer()
+    self.buffers['weights'] = InputBuffer()
+    self.buffers['salience'] = OutputBuffer()
+    self.buffers['match'] = OutputBuffer()
+    
+    # * Once initialized, start in FREE state
+    self.transition(self.State.FREE)
   
   def update(self, timeNow):
     self.timeNow = timeNow
+    
+    # * TODO Read input buffers
+    weights = self.buffers['weights'].get_in(clear=True)
+    if weights is not None:
+      self.updateFeatureWeights(weights)
     
     # * Get HSV
     self.images['HSV'] = cv2.cvtColor(self.images['BGR'], cv2.COLOR_BGR2HSV)
@@ -254,7 +283,7 @@ class VisualSystem(object):
     self.images['Salience'] = cv2.blur(self.images['Salience'], (3, 3))  # blur slightly to smooth out specs
     #self.images['Salience'] *= self.image['Attention']  # TODO evaluate if this is necessary
     _, self.maxSalience, _, self.maxSalienceLoc = cv2.minMaxLoc(self.images['Salience'])  # find out most salient location (from combined salience map)
-    #self.logger.debug("Max. salience value: {:5.3f} @ {}".format(self.maxSalience, self.maxSalienceLo))  # [verbose]
+    #self.logger.debug("Max. salience value: {:5.3f} @ {}".format(self.maxSalience, self.maxSalienceLoc))  # [verbose]
     if self.maxSalience < 0.66:
       self.maxSalience = 0.0
     
@@ -323,11 +352,14 @@ class VisualSystem(object):
           cv2.imshow("{} Salience".format(pathwayLabel), self.imageSalienceOut)
           #cv2.imshow("{} Selection".format(pathwayLabel), self.imageSelectionOut)
     
-    # * Update feature vector representing current state of neurons
+    # * TODO Compute feature vector of attended region
+    
+    # * Write to output buffers
+    # ** Update feature vector representing current state of neurons
     self.updateFeatureVector() 
     self.logger.debug("[{:.2f}] Features: {}".format(self.timeNow, self.featureVector))
     
-    # * TODO Compute feature vector of attended region
+    # * TODO Check for state transitions
     
     # * TODO Final output image
     #self.imageOut = cv2.bitwise_and(self.retina.images['BGR'], self.retina.images['BGR'], mask=self.imageSelectionOut)
@@ -359,6 +391,57 @@ class VisualSystem(object):
     # TODO Ensure this gets called for proper clean-up, esp. now that we are using an animated plot
     if self.context.options.gui:
       self.neuronPotentialMonitor.stop()
+  
+  def transition(self, next_state):
+    self.logger.info("[{:.2f}] Transitioning from {} to {} state after {:.2f}s".format(self.timeNow, self.State.toString(self.state), self.State.toString(next_state), (self.timeNow - self.lastTransitionTime)))
+    self.state = next_state
+    self.lastTransitionTime = self.timeNow
+    self.buffers['state'].set_out(self.state)  # update corresponding buffer
+  
+  def handleIntent(self, intent):
+    if intent is None or intent not in self.intents:
+      self.logger.warning("Unknown/null intent: '%s'", intent)
+      return
+    
+    self.logger.info("Intent: %s", intent)
+    if intent == 'find':
+      # NOTE All relevant buffers must be set *before* find intent is sent in
+      self.transition(self.State.FREE)  # reset state to use new weights
+  
+  def updateFeatureWeights(self, featureWeights, rest=None):
+    """Update weights for features mentioned in given dict, using rest for others if not None."""
+    # TODO Handle special labels for spatial selection
+    if rest is None:
+      rest = featureWeights.get('rest', None)  # rest may also be passed in as a dict item
+    for label, pathway in self.featurePathways.iteritems():
+      if label in featureWeights:
+        pathway.p = featureWeights[label]
+      elif rest is not None:
+        pathway.p = rest
+  
+  def updateFeatureVector(self):
+    self.featureVector = np.float32([pathway.output.neurons[0].potential for pathway in self.featurePathways.itervalues()])
+    # TODO Also compute mean and variance over a moving window here? (or should that be an agent/manager-level function?)
+      
+  def createPopulation(self, *args, **kwargs):
+    """Create a basic Population with given arguments."""
+    return self.addPopulation(Population(*args, **kwargs))
+  
+  def addPopulation(self, population):
+    """Add a given Population to this VisualSystem."""
+    #assert isinstance(population, Population)  # allow other Population-like objects?
+    assert population.label not in self.populations  # refuse to overwrite existing population with same label
+    self.populations.append(population)
+    return population
+  
+  def createProjection(self, presynaptic_population, postsynaptic_population, **kwargs):
+    """Create a basic Projection from presynaptic to postsynaptic population, with given keyword arguments."""
+    assert presynaptic_population in self.populations and postsynaptic_population in self.populations
+    return self.addProjection(Projection(presynaptic_population, postsynaptic_population, **kwargs))
+  
+  def addProjection(self, projection):
+    self.projections.append(projection)
+    return projection
   
   def createRetina(self):
     # TODO * Create Photoreceptor layer
@@ -417,48 +500,55 @@ class VisualSystem(object):
     self.featureVector = None
     self.updateFeatureVector()
   
-  def updateFeatureWeights(self, featureWeights, rest=None):
-    """Update weights for features mentioned in given dict, using rest for others if not None."""
-    # TODO Handle special labels for spatial selection
-    for label, pathway in self.featurePathways.iteritems():
-      if label in featureWeights:
-        pathway.p = featureWeights[label]
-      elif rest is not None:
-        pathway.p = rest
+  @rpc.enable
+  def getBuffer(self, name):
+    try:
+      value = self.buffers[name].get()
+      if callable(value):  # allows output buffer values to be callables (e.g. getter functions) that get called when retrieved
+        value = value()
+      #self.logger.debug("%s: %s", name, value)  # [verbose]
+      return value
+    except KeyError as e:
+      self.logger.error("Buffer KeyError: %s", e)
+    except BufferAccessError as e:
+      self.logger.error("BufferAccessError (get '%s'): %s", name, e)
+    return None  # failed
   
-  def updateFeatureVector(self):
-    self.featureVector = np.float32([pathway.output.neurons[0].potential for pathway in self.featurePathways.itervalues()])
-    # TODO Also compute mean and variance over a moving window here? (or should that be an agent/manager-level function?)
-      
-  def createPopulation(self, *args, **kwargs):
-    """Create a basic Population with given arguments."""
-    return self.addPopulation(Population(*args, **kwargs))
+  @rpc.enable
+  def setBuffer(self, name, value):
+    try:
+      #self.logger.debug("%s: %s", name, value)  # [verbose]
+      obj = self.buffers[name].value  # NOTE direct access (not encouraged - can this be done using simple Python properties?)
+      if callable(obj):  # allows input buffer values to be callables (e.g. setter functions) that get called when the buffer is written to
+        obj(value)
+      else:
+        self.buffers[name].set(value)
+      return True  # NOTE may not give the right indication if obj was a callable and returned a meaningful value
+    except KeyError as e:
+      self.logger.error("Buffer KeyError: %s", e)
+    except BufferAccessError as e:
+      self.logger.error("BufferAccessError (set '%s'): %s", name, e)
+    return False  # failed
   
-  def addPopulation(self, population):
-    """Add a given Population to this VisualSystem."""
-    #assert isinstance(population, Population)  # allow other Population-like objects?
-    assert population.label not in self.populations  # refuse to overwrite existing population with same label
-    self.populations.append(population)
-    return population
+  @rpc.enable
+  def listBuffers(self, types=False):
+    """Return a list of exposed buffers (flat list), optionally with each buffer's type as well (list of 2-tuples)."""
+    return [(name, buf.__class__.__name__) if types else name for name, buf in self.buffers.iteritems()]
   
-  def createProjection(self, presynaptic_population, postsynaptic_population, **kwargs):
-    """Create a basic Projection from presynaptic to postsynaptic population, with given keyword arguments."""
-    assert presynaptic_population in self.populations and postsynaptic_population in self.populations
-    return self.addProjection(Projection(presynaptic_population, postsynaptic_population, **kwargs))
+  @rpc.enable_image
+  def getImage(self, key='BGR'):
+    try:
+      return self.images[key]
+    except KeyError as e:
+      self.logger.error("Image KeyError: %s", e)
+    return None
   
-  def addProjection(self, projection):
-    self.projections.append(projection)
-    return projection
-  
-  def getInputImage(self):
-    return self.images['BGR']
-  
+  @rpc.enable_image
   def getOutputImage(self):
     if self.context.options.gui:
       return self.imageOut
     else:
       return None
-
 
 
 class VisionManager(SimplifiedProjector):
@@ -482,7 +572,7 @@ class FeatureManager(VisionManager):
     self.visualSystem = visualSystem if visualSystem is not None else VisualSystem()  # TODO remove this once VisionManager (or its ancestor caches visualSystem in __init__)
     VisionManager.__init__(self, self.visualSystem)
     self.state = self.State.NONE
-    self.timeStateChange = -1.0
+    self.lastTransitionTime = -1.0
   
   def initialize(self, imageIn, timeNow):
     VisionManager.initialize(self, imageIn, timeNow)
@@ -505,7 +595,7 @@ class FeatureManager(VisionManager):
     self.featureVectorIndex = self.featureVectorCount % self.feature_buffer_size
     
     # Change state according to feature vector values
-    deltaTime = timeNow - self.timeStateChange
+    deltaTime = timeNow - self.lastTransitionTime
     if self.state == self.State.INCOMPLETE and deltaTime > self.min_duration_incomplete and self.featureVectorCount >= self.feature_buffer_size:
       self.transition(self.State.UNSTABLE, timeNow)
     elif self.state == self.State.UNSTABLE or self.state == self.State.STABLE:
@@ -522,27 +612,44 @@ class FeatureManager(VisionManager):
     return keepRunning, imageOut
   
   def transition(self, next_state, timeNow):
-    self.logger.debug("[{:.2f}] Transitioning from {} to {} state after {:.2f}s".format(timeNow, self.State.toString(self.state), self.State.toString(next_state), (timeNow - self.timeStateChange)))
+    self.logger.debug("[{:.2f}] Transitioning from {} to {} state after {:.2f}s".format(timeNow, self.State.toString(self.state), self.State.toString(next_state), (timeNow - self.lastTransitionTime)))
     self.state = next_state
-    self.timeStateChange = timeNow
+    self.lastTransitionTime = timeNow
   
+  @rpc.enable
   def getState(self):
     return self.State.toString(self.state)
   
+  @rpc.enable
   def getFeatureVector(self):
     return self.featureVectorMean.tolist()
 
 
-def test_VisualSystem():
-  # Test the end-to-end visual system
+def main(managerType=VisionManager, with_rpc=False):
+  """Run end-to-end visual system."""
+  
   Context.createInstance()
-  run(VisionManager, description="Test application that uses a SimplifiedProjector to run image input through a VisualSystem instance.")
+  print "main(): Creating visual system and manager"
+  visSystem = VisualSystem()
+  visManager = managerType(visSystem)
+  
+  if with_rpc:
+    print "main(): Exporting RPC calls and starting server thread"
+    rpc.export(visSystem)
+    rpc.export(visManager)
+    rpc.start_server_thread(daemon=True)
+  
+  print "main(): Starting vision loop"
+  run(visManager, description="Run a VisualSystem instance using a VisionManager.")
+  
+  if with_rpc:
+    rpc.stop_server()
+  print "main(): Done."
 
 
 def test_FeatureManager_RPC():
   from time import sleep
   from multiprocessing import Process, Value
-  from lumos import rpc
   
   Context.createInstance()
   print "test_FeatureManager_RPC(): Creating visual system and manager"
@@ -551,11 +658,7 @@ def test_FeatureManager_RPC():
   
   print "test_FeatureManager_RPC(): Exporting RPC calls"
   rpc.export(visSystem)  # order of export vs. enable doesn't matter - everything will be resolved in refresh(), called by start_server()
-  rpc.enable_image(visSystem.getInputImage)
-  rpc.enable_image(visSystem.getOutputImage)
   rpc.export(visManager)
-  rpc.enable(visManager.getState)
-  rpc.enable(visManager.getFeatureVector)
   
   print "test_FeatureManager_RPC(): Starting RPC server thread"
   rpcServerThread = rpc.start_server_thread(daemon=True)
@@ -608,5 +711,13 @@ def test_FeatureManager_RPC():
 
 # Testing
 if __name__ == "__main__":
-  #test_VisualSystem()
-  test_FeatureManager_RPC()
+  # NOTE Defaults to using FeatureManager instead of VisualManager
+  choices = [('--with_rpc', "Run VisualSystem with RPC enabled"),
+             ('--test_rpc', "Test RPC functionality by running a client, server pair")]
+  context = Context.createInstance(parent_argparsers=[Context.createChoiceParser(choices)])
+  if context.options.with_rpc:
+    main(managerType=FeatureManager, with_rpc=True)
+  elif context.options.test_rpc:
+    test_FeatureManager_RPC()
+  else:
+    main(managerType=FeatureManager)  # run with default arguments
