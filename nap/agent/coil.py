@@ -15,8 +15,16 @@ from ..vision.visual_system import VisualSystem, FeatureManager
 class COILManager(FeatureManager):
   """A visual system manager for processing a single COIL-100 image."""
   
+  # Override some FeatureManager parameters
+  min_duration_unstable = 3.0
+  
   def initialize(self, imageIn, timeNow):
     FeatureManager.initialize(self, imageIn, timeNow)
+    
+    # Configure visual system to use equal feature weights and hold gaze at a fixed location (default center)
+    self.visualSystem.setBuffer('weights', { 'rest': 1.0 })
+    self.visualSystem.setBuffer('intent', 'hold')
+    # TODO: Use a better feature encoding scheme allowing the visual system to scan different parts of the image
   
   def process(self, imageIn, timeNow):
     keepRunning, imageOut = FeatureManager.process(self, imageIn, timeNow)
@@ -30,7 +38,7 @@ class COILManager(FeatureManager):
 
 
 class COILAgent(object):
-  image_size = (200, 200)  # size of the retina on which images are projected, can be larger or smaller than actual size of images
+  image_size = (256, 256)  # optimal size can be vary depending on foveal distribution, image size and whether eye movements are enabled or not
   input_file_prefix = "obj"
   input_file_sep = "__"
   input_file_ext = "png"
@@ -43,14 +51,14 @@ class COILAgent(object):
     argParser = argparse.ArgumentParser(add_help=False)
     #argParser.add_argument('--in', type=str, default="coil-100", help="path to directory containing input images")  # use input_source as directory; default to current directory
     argParser.add_argument('--out', type=str, default=None, help="path to output directory")  # should this be a common parameter in Context?
-    argParser.add_argument('--obj', type=str, default="1,101,1", required=True, help="object ID range, right-open interval <start>,<stop>,<step> (no spaces)")
-    argParser.add_argument('--view', type=str, default="0,360,5", required=True, help="view angle range in degrees, right-open interval <start>,<stop>,<step> (no spaces)")
+    argParser.add_argument('--obj', type=str, default="1,101,1", required=False, help="object ID range, right-open interval <start>,<stop>,<step> (no spaces); default: full range")
+    argParser.add_argument('--view', type=str, default="0,360,5", required=False, help="view angle range in degrees, right-open interval <start>,<stop>,<step> (no spaces); default: full range")
     self.context = Context.createInstance(description="COIL-100 image dataset processor", parent_argparsers=[argParser])  # TODO how to gather arg parsers from other interested parties?
     self.logger = logging.getLogger(self.__class__.__name__)
     
     # * Parse arguments
-    self.inDir = self.context.options.input_source  # will be an absolute path
-    assert os.path.isdir(self.inDir), "Invalid input directory \"{}\"".format(self.inDir)  # TODO also accept wildcards using glob.glob()?
+    self.inDir = self.context.options.input_source  # should be an absolute path to a dir with COIL images; if it is a file/camera instead, it will be used as sole input
+    # TODO also accept wildcards using glob.glob()?
     self.outDir = self.context.options.out  # just for convenience
     self.outFile = None
     if self.outDir is not None:  # TODO otherwise default to some directory?
@@ -67,15 +75,10 @@ class COILAgent(object):
     
     # * Create visual system and manager
     self.context.update()  # get fresh time
-    self.visSys = VisualSystem(imageSize=self.image_size, timeNow=self.context.timeNow, showMonitor=False)
+    self.visSys = VisualSystem(imageSize=self.image_size, timeNow=self.context.timeNow, showMonitor=True)
     self.visMan = COILManager(self.visSys)
     
   def run(self):
-    # Configure visual system to use equal feature weights and hold gaze a fixed location (default center)
-    self.visSys.setBuffer('weights', { 'rest': 1.0 })
-    self.visSys.setBuffer('intent', 'hold')
-    # TODO: Use a better feature encoding scheme allowing the visual system to scan different parts of the image
-    
     if self.outFile is not None:
       self.outFile.write("{}\t{}\t{}\t{}\n".format('obj', 'view', '\t'.join(["{}_mean".format(label) for label in self.visSys.featureLabels]), '\t'.join(["{}_sd".format(label) for label in self.visSys.featureLabels])))
     
