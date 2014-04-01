@@ -46,7 +46,7 @@ class COILAgent(object):
     argParser.add_argument('--obj', type=str, default="1,101,1", required=True, help="object ID range, right-open interval <start>,<stop>,<step> (no spaces)")
     argParser.add_argument('--view', type=str, default="0,360,5", required=True, help="view angle range in degrees, right-open interval <start>,<stop>,<step> (no spaces)")
     self.context = Context.createInstance(description="COIL-100 image dataset processor", parent_argparsers=[argParser])  # TODO how to gather arg parsers from other interested parties?
-    self.logger = logging.getLogger(__name__)
+    self.logger = logging.getLogger(self.__class__.__name__)
     
     # * Parse arguments
     self.inDir = self.context.options.input_source  # will be an absolute path
@@ -65,14 +65,19 @@ class COILAgent(object):
     self.objRange = xrange(*(int(x) for x in self.context.options.obj.split(',')))
     self.viewRange = xrange(*(int(x) for x in self.context.options.view.split(',')))
     
-    # * Create an instance of VisualSystem (VisionManager instance needs to be created per image; TODO change this when InputDevice is able to deal with sequence of separate images)
+    # * Create visual system and manager
     self.context.update()  # get fresh time
-    self.visualSystem = VisualSystem(imageSize=self.image_size, timeNow=self.context.timeNow, showMonitor=False)
-    self.manager = COILManager(self.visualSystem)
+    self.visSys = VisualSystem(imageSize=self.image_size, timeNow=self.context.timeNow, showMonitor=False)
+    self.visMan = COILManager(self.visSys)
     
-  def start(self):
+  def run(self):
+    # Configure visual system to use equal feature weights and hold gaze a fixed location (default center)
+    self.visSys.setBuffer('weights', { 'rest': 1.0 })
+    self.visSys.setBuffer('intent', 'hold')
+    # TODO: Use a better feature encoding scheme allowing the visual system to scan different parts of the image
+    
     if self.outFile is not None:
-      self.outFile.write("{}\t{}\t{}\t{}\n".format('obj', 'view', '\t'.join(["{}_mean".format(label) for label in self.visualSystem.featureLabels]), '\t'.join(["{}_sd".format(label) for label in self.visualSystem.featureLabels])))
+      self.outFile.write("{}\t{}\t{}\t{}\n".format('obj', 'view', '\t'.join(["{}_mean".format(label) for label in self.visSys.featureLabels]), '\t'.join(["{}_sd".format(label) for label in self.visSys.featureLabels])))
     
     if self.context.isDir:  # input source is a directory
       # * Run visual input using manager, looping over all specified object images
@@ -90,11 +95,11 @@ class COILAgent(object):
           self.context.options.input_source = input_file
           self.context.isImage = True
           print "Running..."
-          run(self.manager, resetContextTime=False)  # use the same manager so that visual system is only created once
+          run(self.visMan, resetContextTime=False)  # use the same manager so that visual system is only created once
           if self.outFile is not None:
-            self.outFile.write("{}\t{}\t{}\t{}\n".format(obj, view, '\t'.join(str(feat_mean) for feat_mean in self.manager.featureVectorMean), '\t'.join(str(feat_sd) for feat_sd in self.manager.featureVectorSD)))
+            self.outFile.write("{}\t{}\t{}\t{}\n".format(obj, view, '\t'.join(str(feat_mean) for feat_mean in self.visMan.featureVectorMean), '\t'.join(str(feat_sd) for feat_sd in self.visMan.featureVectorSD)))
     else:
-      run(self.manager, resetContextTime=False)  # run on the sole input source (image or video)
+      run(self.visMan, resetContextTime=False)  # run on the sole input source (image or video)
       #if self.outFile is not None:
       #  self.outFile.write("{}\t{}\t{}\t{}\n".format(obj, view, )) # TODO dunno obj & view for single image, what to do?!
     
@@ -104,4 +109,4 @@ class COILAgent(object):
 
 
 if __name__ == "__main__":
-  COILAgent().start()
+  COILAgent().run()
