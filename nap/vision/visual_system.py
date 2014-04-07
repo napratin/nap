@@ -1,6 +1,6 @@
 """A biologically-inspired model of visual perception."""
 
-from math import exp
+from math import exp, hypot
 import logging
 import numpy as np
 import cv2
@@ -60,10 +60,9 @@ class VisualSystem(object):
   """Complete system for processing dynamic visual input."""
   
   State = Enum(('NONE', 'FREE', 'SACCADE', 'FIXATE'))
-  intents = ['find', 'hold', 'release']  # all supported intents
+  intents = ['find', 'hold', 'release', 'reset']  # all supported intents
   
   default_image_size = (256, 256)  # (width, height) TODO read from context options
-  min_good_salience = 0.66
   
   num_rods = 10000  # human: 90-120 million
   num_cones = 1000  # human: 4.5-6 million
@@ -77,6 +76,11 @@ class VisualSystem(object):
   #max_saccade_duration = 0.5  # human: 0.2s (200ms); not used as we end saccade period when ocular motion stops
   min_fixation_duration = 0.5  # human: 0.1s (100ms), varies based by activity
   max_fixation_duration = 3.0  # human: 0.5s (500ms), varies considerably by activity, affected by cognitive control
+
+  min_good_salience = 0.66  # recommended values: 0.66 (filters out most unwanted regions)
+  min_saccade_salience = 0.25  # minimum salience required to make a saccade to (otherwise reset to center)
+  
+  foveal_radius_ratio = 0.2  # fraction of distance from center to corners of the retina that is considered to be in foveal region
   
   def __init__(self, imageSize=default_image_size, timeNow=0.0, showMonitor=True, ocularMotionSystem=None):
     # * Get context and logger
@@ -99,6 +103,7 @@ class VisualSystem(object):
     
     # * Images and related members (TODO do we need to initialize these at all? - new images are generated every update)
     self.imageCenter = (self.imageSize[1] / 2, self.imageSize[0] / 2)
+    self.fovealRadius = hypot(self.imageCenter[0], self.imageCenter[1]) / self.foveal_radius_ratio
     self.imageShapeC3 = (self.imageSize[1], self.imageSize[0], 3)  # numpy shape for 3 channel images
     self.imageShapeC1 = (self.imageSize[1], self.imageSize[0])  # numpy shape for single channel images
     # NOTE Image shapes (h, w, 1) and (h, w) are not compatible unless we use keepdims=True for numpy operations
@@ -190,6 +195,7 @@ class VisualSystem(object):
     self.createVisualCortex()  # creates and populates self.featurePathways
     
     # * Eye movement
+    self.saccadeSalience = 0.0  # salience of last location we moved to
     self.saccadeTarget = (0, 0)  # center-relative
     #self.lastSaccadeTime = self.timeNow  # [unused]
     
@@ -227,6 +233,9 @@ class VisualSystem(object):
   
   def process(self, imageIn, timeNow):
     self.timeNow = timeNow
+    self.images['BGR'][:] = imageIn  # NOTE: must be pre-allocated and of the same (compatible) shape as imageIn
+    if self.context.options.gui:
+      cv2.imshow("Retina", self.images['BGR'])
     
     # * State-based pre-processing
     if self.state == self.State.SACCADE:
@@ -242,7 +251,6 @@ class VisualSystem(object):
       self.updateFeatureWeights(weights)
     
     # * Get HSV
-    self.images['BGR'][:] = imageIn  # NOTE: must be pre-allocated and of the same (compatible) shape as imageIn
     self.images['HSV'] = cv2.cvtColor(self.images['BGR'], cv2.COLOR_BGR2HSV)
     self.images['H'], self.images['S'], self.images['V'] = cv2.split(self.images['HSV'])
     
@@ -311,7 +319,7 @@ class VisualSystem(object):
     self.images['Salience'] = cv2.blur(self.images['Salience'], (3, 3))  # blur slightly to smooth out specs
     self.images['Salience'] *= self.images['Weight']  # effectively reduces salience around the edges (which can sometime give artificially high values due to partial receptive fields)
     _, self.maxSalience, _, self.maxSalienceLoc = cv2.minMaxLoc(self.images['Salience'])  # find out most salient location (from combined salience map)
-    #self.logger.debug("Max. salience value: {:5.3f} @ {}".format(self.maxSalience, self.maxSalienceLoc))  # [verbose]
+    self.logger.debug("Max. salience value: {:5.3f} @ {}".format(self.maxSalience, self.maxSalienceLoc))  # [verbose]
     
     # * Compute features along each pathway
     for pathwayLabel, featurePathway in self.featurePathways.iteritems():
@@ -360,8 +368,8 @@ class VisualSystem(object):
           #featureNeuron.updateWithP(timeNow)  # update probabilistically
           #self.logger.debug("{} Feature neuron potential: {:.3f}, pixelValue: {}".format(pathwayLabel, featureNeuron.potential, featureNeuron.pixelValue))
         
-        # ** Render output images and show them
-        if self.context.options.gui:
+        # ** Render output images and show them (per feature pathway, better show in debug mode only)
+        if self.context.options.gui and self.context.options.debug:
           # *** Salience neurons
           self.imageSalienceOut.fill(0.0)
           for salienceNeuron in salienceNeurons.neurons:
@@ -384,16 +392,14 @@ class VisualSystem(object):
     self.buffers['salience'].set_out(self.maxSalience)
     self.buffers['location'].set_out(self.toCenterRelative(self.maxSalienceLoc))
     self.updateFeatureVector()  # external buffer reads may need this
-    if self.state == self.State.FREE and \
-        (self.maxSalience >= self.min_good_salience or self.timeNow > (self.lastTransitionTime + self.max_free_duration)):
-      if self.ocularMotionSystem is not None:
+    if self.state == self.State.FREE:
+      if self.maxSalience >= self.min_good_salience or \
+         (self.maxSalience >= self.min_saccade_salience and self.timeNow > (self.lastTransitionTime + self.max_free_duration)): # we have good (or good enough) salience, lets saccade to it
+        self.saccadeSalience = self.maxSalience
         self.saccadeTarget = np.int_(self.buffers['location'].get_out())  # ocular motion system requires a 2-element numpy array
-        self.transition(self.State.SACCADE)
-        self.logger.debug("Moving to: %d, %d", self.saccadeTarget[0], self.saccadeTarget[1])  # [verbose]
-        self.ocularMotionSystem.move(self.saccadeTarget)
-      else:
-        self.logger.warning("Ocular motion system not found, skipping to FIXATE")
-        self.transition(self.State.FIXATE)
+        self.performSaccade(self.saccadeTarget)
+      elif self.timeNow > (self.lastTransitionTime + self.max_free_duration):  # we've been waiting too long, nothing significant, let's reset
+        self.performSaccade(None)  # TODO: Probabilistically choose a not-so-good location?
     elif self.state == self.State.FIXATE:
       # Update feature vector representing current state of neurons
       self.logger.debug("[{:.2f}] Features: {}".format(self.timeNow, self.featureVector))  # [verbose]
@@ -403,17 +409,17 @@ class VisualSystem(object):
         # TODO: Compute utility based on duration of fixation (falling activation), match and/or salience
         # TODO: If very high utility, turn on hold (assuming agent will ask us to release)
         #       If low utility or past max_fixation_duration, switch to FREE state and look somewhere else
-        if self.timeNow > (self.lastTransitionTime + self.max_fixation_duration) and not self.hold:
+        maxSalienceLocDist = hypot(self.maxSalienceLoc[0], self.maxSalienceLoc[1])
+        if not self.hold and \
+            (maxSalienceLocDist > self.fovealRadius or \
+             self.maxSalience < self.saccadeSalience or \
+             self.timeNow > (self.lastTransitionTime + self.max_fixation_duration)):
           # TODO: Put a max duration on hold?
           # TODO: Inhibit current location before switching to FREE
           self.transition(self.State.FREE)
     
     # * Show output images if in GUI mode
     if self.context.options.gui:
-      # TODO Final output image
-      #self.imageOut = cv2.bitwise_and(self.retina.images['BGR'], self.retina.images['BGR'], mask=self.imageSelectionOut)
-      
-      cv2.imshow("Retina", self.images['BGR'])
       #cv2.imshow("Hue", self.images['H'])
       #cv2.imshow("Saturation", self.images['S'])
       #cv2.imshow("Value", self.images['V'])
@@ -426,13 +432,18 @@ class VisualSystem(object):
         for ganglionType, ganglionImage in self.images['Ganglion'].iteritems():
           cv2.imshow("{} Ganglion cells".format(ganglionType), ganglionImage)
           #cv2.imshow("{} Ganglion cells".format(ganglionType), np.sqrt(self.featurePathways[ganglionType].p) * ganglionImage)  # show image weighted by selected feature probability, artificially scaled to make responses visible
-      cv2.imshow("Salience", self.images['Salience'])
+      #cv2.imshow("Salience", self.images['Salience'])  # combined salience image
       
       # Designate a representative output image
+      #self.imageOut = cv2.bitwise_and(self.retina.images['BGR'], self.retina.images['BGR'], mask=self.imageSelectionOut)  # mask out everything outside selected neuron's receptive field
       self.imageOut = self.images['Salience']  # make a copy?
-      if self.maxSalience >= self.min_good_salience:
-        cv2.circle(self.imageOut, self.maxSalienceLoc, int(self.maxSalience * 25), int(128 + self.maxSalience * 127), 1 + int(self.maxSalience * 4))  # mark most salient location: larger, fatter, brighter for higher salience value
-      _, self.imageOut = cv2.threshold(self.imageOut, 0.5, 1.0, cv2.THRESH_TOZERO)  # apply threshold to remove low-response regions
+      #_, self.imageOut = cv2.threshold(self.imageOut, 0.5, 1.0, cv2.THRESH_TOZERO)  # apply threshold to remove low-response regions
+      self.imageOut = np.uint8(self.imageOut * 255)  # convert to uint8 image for display (is this necessary?)
+      if self.maxSalience > self.min_saccade_salience:
+        cv2.circle(self.imageOut, self.maxSalienceLoc, 2, 200, -1)  # mark most salient location with a dot
+        if self.maxSalience >= self.min_good_salience:
+          cv2.circle(self.imageOut, self.maxSalienceLoc, int(self.maxSalience * 25), int(128 + self.maxSalience * 127), 1 + int(self.maxSalience * 4))  # highlight highly salient locations: larger, fatter, brighter for higher salience value
+      cv2.putText(self.imageOut, self.State.toString(self.state) + (" (holding)" if self.hold else ""), (20, 30), cv2.FONT_HERSHEY_PLAIN, 1, 200)  # show current state
     
     return True, self.imageOut
   
@@ -463,8 +474,23 @@ class VisualSystem(object):
         self.transition(self.State.FIXATE)  # transition to FIXATE state (unless performing a saccade)
     elif intent == 'release':
       self.hold = False  # system can resume FIXATE-SACCADE cycle
+    elif intent == 'reset':
+      self.transition(self.State.SACCADE)
+      self.ocularMotionSystem.reset()  # reset to the center of visual stream
+      self.hold = False
     else:
       self.logger.warning("Unhandled intent: '%s'", intent)
+  
+  def performSaccade(self, saccadeTarget=None):
+    if self.ocularMotionSystem is not None:
+      self.transition(self.State.SACCADE)
+      if saccadeTarget is not None:
+        self.ocularMotionSystem.move(saccadeTarget)
+      else:
+        self.ocularMotionSystem.reset()
+    else:
+      self.logger.warning("Ocular motion system not found, skipping to FIXATE")
+      self.transition(self.State.FIXATE)
   
   def updateFeatureWeights(self, featureWeights, rest=None):
     """Update weights for features mentioned in given dict, using rest for others if not None."""
@@ -615,8 +641,8 @@ class VisualSystem(object):
 class VisionManager(Projector):
   """A version of Projector that defaults to using a VisualSystem as target."""
   
-  def __init__(self, target=None):
-    Projector.__init__(self, target if target is not None else VisualSystem())
+  def __init__(self, target=None, *args, **kwargs):
+    Projector.__init__(self, target if target is not None else VisualSystem(), *args, **kwargs)
     self.visualSystem = self.target  # synonym - Projector uses the generic term target
     self.ocularMotionSystem = EmulatedOcularMotionSystem(self, timeNow=self.context.timeNow)
     self.visualSystem.ocularMotionSystem = self.ocularMotionSystem
@@ -638,8 +664,8 @@ class FeatureManager(VisionManager):
   feature_buffer_size = 10  # number of iterations/samples to compute feature vector statistics over (rolling window)
   max_feature_sd = 0.005  # max. s.d. (units: Volts) to tolerate in judging a signal as stable
   
-  def __init__(self, visualSystem=None):
-    VisionManager.__init__(self, visualSystem)
+  def __init__(self, *args, **kwargs):
+    VisionManager.__init__(self, *args, **kwargs)
     self.state = self.State.NONE
     self.lastTransitionTime = -1.0
   
@@ -683,7 +709,7 @@ class FeatureManager(VisionManager):
         elif self.state == self.State.STABLE and deltaTime > self.min_duration_stable and \
             (np.max(self.featureVectorSD) > self.max_feature_sd or deltaTime > self.max_duration_stable):
             self.transition(self.State.UNSTABLE, timeNow)
-            self.visualSystem.setBuffer('intent', 'release')  # let system return to FIXATE-SACCADE mode
+            self.visualSystem.setBuffer('intent', 'find')  # let system return to FIXATE-SACCADE mode
       else:  # something made visual system lose focus, including us releasing the system
         self.transition(self.State.INCOMPLETE, timeNow)
     

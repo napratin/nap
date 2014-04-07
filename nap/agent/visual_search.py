@@ -2,18 +2,20 @@
 
 import logging
 import argparse
+import numpy as np
 
 from lumos.context import Context
 from lumos.input import InputRunner
 from lumos import rpc
 
-from ..vision.visual_system import VisualSystem, FeatureManager, default_feature_weight, default_feature_weight_rest
+from ..vision.visual_system import VisualSystem, VisionManager, FeatureManager, default_feature_weight, default_feature_weight_rest
 
 
 class VisualSearchAgent(object):
   """A simple visual search agent that scans input stream for locations with desired features."""
   
-  image_size = VisualSystem.default_image_size  # size of retina to project on
+  image_size = (256, 256)  #VisualSystem.default_image_size  # size of retina to project on
+  screen_background = np.uint8([0, 0, 0])  #VisionManager.default_screen_background
   
   def __init__(self):
     # * Create application context, passing in custom arguments, and get a logger
@@ -41,7 +43,7 @@ class VisualSearchAgent(object):
     # * Create systems and associated managers
     self.context.update()  # get fresh time
     self.visSys = VisualSystem(imageSize=self.image_size, timeNow=self.context.timeNow, showMonitor=False)
-    self.visMan = FeatureManager(self.visSys)
+    self.visMan = VisionManager(self.visSys, screen_background=self.screen_background)
     # TODO: Design a better way to share systems/managers (every system has a parent/containing agent?)
     
     # * Export RPC calls, if enabled
@@ -59,6 +61,7 @@ class VisualSearchAgent(object):
     # * Run vision manager and ocular motion system
     runner = InputRunner(self.visMan)
     
+    self.context.resetTime()
     while runner.update():  # should update context time
       pass
     

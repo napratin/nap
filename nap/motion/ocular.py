@@ -16,7 +16,7 @@ class EmulatedOcularMotionSystem(OcularMotionSystem):
   """Eye movements emulated by a moving window over input image stream."""
   
   velocity_factor = 0.9  # per sec; weight that controls how target distance affects velocity
-  max_velocity = 100  # pixels per sec; maximum velocity with which eye can move
+  max_velocity = 200  # pixels per sec; maximum velocity with which eye can move
   min_distance = 10  # pixels
   min_delta_distance = 2  # pixels
   
@@ -62,6 +62,7 @@ class EmulatedOcularMotionSystem(OcularMotionSystem):
   
   def move(self, d):
     self.d = d
+    self.logger.debug("Moving to: %d, %d", self.d[0], self.d[1])  # [verbose]
     self.isMoving = True
     self.lastMovementTime = self.timeNow
   
@@ -71,8 +72,18 @@ class EmulatedOcularMotionSystem(OcularMotionSystem):
     self.isMoving = False
     self.logger.debug("Stopped")  # [verbose]
   
-  @property
-  def velocity(self):
+  def reset(self):
+    self.logger.debug("Reset")  # [verbose]
+    offset = self.getFocusOffset()
+    self.move(np.int_([-offset[0], -offset[1]]))  # move back to center
+  
+  def getFocusPoint(self):
+    return self.projector.focusPoint
+  
+  def getFocusOffset(self):
+    return (self.projector.focusPoint[0] - self.projector.screenSize[0] / 2, self.projector.focusPoint[1] - self.projector.screenSize[1] / 2) 
+  
+  def getVelocity(self):
     return self.v
 
 
@@ -86,6 +97,6 @@ if __name__ == "__main__":
   while runner.update():
     ocular.update(context.timeNow)
     if not ocular.isMoving:
-      ocular.move(np.float32([np.random.uniform(-100, 100), np.random.uniform(-100, 100)]))
+      ocular.move(np.int_([np.random.uniform(-100, 100), np.random.uniform(-100, 100)]))
   
   runner.cleanUp()

@@ -38,7 +38,7 @@ class COILManager(FeatureManager):
 
 
 class COILAgent(object):
-  image_size = (256, 256)  # optimal size can be vary depending on foveal distribution, image size and whether eye movements are enabled or not
+  image_size = (200, 200)  # optimal size can be vary depending on foveal distribution, image size and whether eye movements are enabled or not
   input_file_prefix = "obj"
   input_file_sep = "__"
   input_file_ext = "png"
@@ -75,7 +75,7 @@ class COILAgent(object):
     
     # * Create visual system and manager
     self.context.update()  # get fresh time
-    self.visSys = VisualSystem(imageSize=self.image_size, timeNow=self.context.timeNow, showMonitor=True)
+    self.visSys = VisualSystem(imageSize=self.image_size, timeNow=self.context.timeNow, showMonitor=False)
     self.visMan = COILManager(self.visSys)
     
   def run(self):
