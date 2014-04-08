@@ -1,0 +1,4 @@
+*.psydat
+*.log
+*.csv
+!.gitignore

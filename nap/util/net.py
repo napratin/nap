@@ -32,6 +32,7 @@ class ImageServerWindow(Window):
   win.close()
   """
   
+  flipVertical = False  # flip image along on vertical axis to correct for upside-down error
   gui = False  # image window may steal focus; enable for debugging only
   imageWinName = "Image Server Window"
   
@@ -79,6 +80,8 @@ class ImageServerWindow(Window):
     # ** Method 2: Split color channels, dropping alpha, and recombine in desired order
     imageR, imageG, imageB, _ = cv2.split(imageRGBA)
     imageBGR = cv2.merge((imageB, imageG, imageR))
+    if self.flipVertical:
+      imageBGR = cv2.flip(imageBGR, 0)
     
     # Cache latest image for serving; optionally, display it
     self.server.write(imageBGR)

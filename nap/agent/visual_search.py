@@ -9,6 +9,7 @@ import cv2
 from lumos.context import Context
 from lumos.input import InputRunner
 from lumos import rpc
+from lumos.net import ImageServer
 
 from ..vision.visual_system import VisualSystem, VisionManager, FeatureManager, default_feature_weight, default_feature_weight_rest
 
@@ -123,6 +124,21 @@ class ZelinksyFinder(VisualSearchAgent):
     self.maxFixations = (self.numStimuli * 1.5)  # TODO: Make this a configurable param
     self.numFixations = 0
     self.firstSaccadeLatency = None
+    
+    # * Response output
+    self.rpcClient = None
+    try:
+      self.rpcClient = rpc.Client(port=ImageServer.default_port)
+      return  # skip checking, otherwise will block
+      testResult = self.rpcClient.call('rpc.list')
+      if testResult == None:
+        self.logger.warning("Did not get RPC result (no remote keyboard)")
+        self.rpcClient.close()
+        self.rpcClient = None
+      else:
+        self.logger.info("Remote keyboard connected (at least an RPC server is there)")
+    except Exception as e:
+      self.logger.error("Error initializing RPC client (no remote keyboard): {}".format(e))
   
   def update(self):
     # TODO: If vision is fixated, hold, match shape patterns (templates) with fixation region
@@ -193,13 +209,13 @@ class ZelinksyFinder(VisualSearchAgent):
       if bestMatch == self.target:  # found the target!
         self.logger.info("Target found!")
         self.respond('y')
-        return False  # end trial
+        return False  # end trial (TODO: start new trial?)
       else:  # nope, this ain't the target
         self.numDistractorsSeen += 1
         self.logger.info("Distractor (num seen: {})".format(self.numDistractorsSeen))
         if self.numDistractorsSeen >= self.numStimuli or self.numFixations >= self.maxFixations:  # all stimuli were (probably) distractors, no target
           self.respond('n')
-          return False  # end trial
+          return False  # end trial (TODO: start new trial?)
         else:
           self.visSys.setBuffer('intent', 'release')  # let visual system inhibit and move on
     
@@ -221,8 +237,13 @@ class ZelinksyFinder(VisualSearchAgent):
     return match8, minMatch, maxMatch, minMatchLoc, maxMatchLoc
   
   def respond(self, key):
-    # TODO: press key
     self.logger.info("Response: {}, time: {}, numFixations: {}, firstSaccadeLatency: {}, input: {}".format(key, self.context.timeNow, self.numFixations, self.firstSaccadeLatency, os.path.basename(self.context.options.input_source) if (self.context.isImage or self.context.isVideo) else 'live/rpc'))
+    if not self.rpcClient is None:
+      try:
+        self.rpcClient.call('Keyboard.keyPress', params={'symbol': key})
+      except Exception as e:
+        self.logger.error("Error sending response key (will not retry): {}".format(e))
+        self.rpcClient = None
 
 
 if __name__ == "__main__":
