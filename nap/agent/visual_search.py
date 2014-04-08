@@ -1,6 +1,7 @@
 """Visual search using features from visual system and ocular motion."""
 
 import os
+from math import hypot
 import logging
 import argparse
 import numpy as np
@@ -86,8 +87,13 @@ class ZelinksyFinder(VisualSearchAgent):
   #o_radius = 16  # radius of O pattern [unused]
   
   # NOTE: Pathnames relative to root of repository
+  fixcross_pattern_file = "res/data/visual-search/zelinsky-patterns/fixcross-pattern.png"
   o_pattern_file = "res/data/visual-search/zelinsky-patterns/o-pattern.png"
   q_pattern_file = "res/data/visual-search/zelinsky-patterns/q-pattern.png"
+  
+  detect_fixation = False  # TODO: complete fixation cross functionality (end trial, move to next), then enable this
+  
+  # TODO: Use a dict of patterns to evaluate, one of them target, one of them fixation cross?
   
   # TODO: These need to be updated according to fovea and pattern size
   max_match_sqdiff = 0.02  # max value of SQDIFF matching to be counted as a valid match
@@ -112,8 +118,10 @@ class ZelinksyFinder(VisualSearchAgent):
     #self.q_pattern = np.zeros(self.pattern_size, dtype=np.float32)  # [unused]
     #cv2.circle(self.o_pattern, (self.pattern_size[1] / 2, self.pattern_size[0] / 2), self.o_radius, 1.0, 1)  # [unused]
     # ** Load from files (NOTE: num channels must match selected feature channel)
+    self.fixcross_pattern = cv2.imread(self.fixcross_pattern_file, 0)  # pass flags=0 for grayscale
     self.o_pattern = cv2.imread(self.o_pattern_file, 0)  # pass flags=0 for grayscale
     self.q_pattern = cv2.imread(self.q_pattern_file, 0)  # pass flags=0 for grayscale
+    #cv2.imshow("Fixation cross pattern", self.fixcross_pattern)
     #cv2.imshow("O pattern", self.o_pattern)
     #cv2.imshow("Q pattern", self.q_pattern)
     
@@ -166,6 +174,15 @@ class ZelinksyFinder(VisualSearchAgent):
     #imageFovea = self.visSys.getFovealImage(self.featureChannel)
     imageFovea = self.visSys.getFixatedImage(self.featureChannel)  # TODO: rename imageFovea -> imageInFocus?
     #imageFovea = cv2.cvtColor(imageFovea, cv2.COLOR_BGR2GRAY)  # convert BGR to grayscale, if required
+    
+    if self.detect_fixation:
+      matchF, minMatchF, maxMatchF, minMatchLocF, maxMatchLocF = self.getMatch(imageFovea, self.fixcross_pattern)
+      self.logger.info("Match (F): min: {} at {}, max: {} at {}".format(minMatchF, minMatchLocF, maxMatchF, maxMatchLocF))
+      if minMatchF <= 0.001:
+        if hypot(*self.visSys.getBuffer('location')) < 20.0 and \
+            hypot(*self.visSys.ocularMotionSystem.getFocusOffset()) < 20.0:  # a fixation cross in the center!
+          self.logger.info("I think this is a fixation cross")
+          # TODO: Reset vision system and be ready (use state to prevent double action)
     
     matchO, minMatchO, maxMatchO, minMatchLocO, maxMatchLocO = self.getMatch(imageFovea, self.o_pattern)
     #self.logger.info("Match (O): min: {} at {}, max: {} at {}".format(minMatchO, minMatchLocO, maxMatchO, maxMatchLocO))
