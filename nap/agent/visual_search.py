@@ -1,5 +1,6 @@
 """Visual search using features from visual system and ocular motion."""
 
+import os
 import logging
 import argparse
 import numpy as np
@@ -83,19 +84,26 @@ class ZelinksyFinder(VisualSearchAgent):
   #pattern_size = (48, 48)  # size of pattern image [unused]
   #o_radius = 16  # radius of O pattern [unused]
   
-  # TODO: Make hardcoded pathnames configurable (at least relative)
-  o_pattern_file = "/home/achakra/Research/media/images/search/zelinsky-patterns/o-pattern.png"
-  q_pattern_file = "/home/achakra/Research/media/images/search/zelinsky-patterns/q-pattern.png"
+  # NOTE: Pathnames relative to root of repository
+  o_pattern_file = "res/data/visual-search/zelinsky-patterns/o-pattern.png"
+  q_pattern_file = "res/data/visual-search/zelinsky-patterns/q-pattern.png"
   
   # TODO: These need to be updated according to fovea and pattern size
-  max_match_sqdiff = 0.01  # max value of SQDIFF matching to be counted as a valid match
-  min_confidence_sqdiff = 0.01  # min desired difference between activations for target and distractor (to avoid jumping to conclusion when there is confusion)
+  max_match_sqdiff = 0.02  # max value of SQDIFF matching to be counted as a valid match
+  min_confidence_sqdiff = 0.008  # min desired difference between activations for target and distractor (to avoid jumping to conclusion when there is confusion)
   
   def __init__(self, target=default_target, numStimuli=default_num_stimuli, featureChannel='V'):
     VisualSearchAgent.__init__(self)
     self.target = target
     self.featureChannel = featureChannel
     self.numStimuli = numStimuli
+    
+    # * Configure visual system as needed (shorter times for fast completion goal, may result in some inaccuracy)
+    self.visSys.max_free_duration = 0.25
+    self.visSys.max_fixation_duration = 1.0
+    self.visSys.max_hold_duration = 2.0
+    self.visSys.min_good_salience = 0.2  # this task is generally very low-salience
+    #self.visSys.min_saccade_salience = 0.1
     
     # * Initialize shape patterns
     # ** Generate  # [unused]
@@ -110,16 +118,37 @@ class ZelinksyFinder(VisualSearchAgent):
     
     # * Initialize matching-related objects
     self.numDistractorsSeen = 0  # if numDistractorsSeen >= numStimuli, no target is present
-    
+    self.newFixation = False
+    self.processFixation = False  # used to prevent repeatedly processing a fixation period once a conclusive result has been reached
+    self.maxFixations = (self.numStimuli * 1.5)  # TODO: Make this a configurable param
+    self.numFixations = 0
+    self.firstSaccadeLatency = None
   
   def update(self):
     # TODO: If vision is fixated, hold, match shape patterns (templates) with fixation region
     #       If it's a match for target, respond 'y' and return False to end
     #       If not, increment distractor count; if numDistractorsSeen >= numStimuli, respond 'n' and return False to end
-    if self.visSys.getBuffer('state') != VisualSystem.State.FIXATE:
+    # NOTE(4/8): Above logic has mostly been implemented here
+    visState = self.visSys.getBuffer('state')
+    if visState != VisualSystem.State.FIXATE:
+      self.newFixation = True  # if system is not currently fixated, next one must be a fresh one
+      self.processFixation = True  # similarly reset this (NOTE: this is somewhat inefficient - setting flags repeatedly)
+      if visState == VisualSystem.State.SACCADE and self.firstSaccadeLatency is None:
+        self.firstSaccadeLatency = self.context.timeNow
+        self.logger.info("First saccade at: {}".format(self.firstSaccadeLatency))
       return True
     
-    imageFovea = self.visSys.getFovealImage(self.featureChannel)  # use 'BGR' for full-color matching, 'V' for intensity only, 'H' for hue only (colored bars), etc.
+    #cv2.imshow("Fixation", self.visSys.getFixatedImage(self.featureChannel))  # [debug]
+    if self.newFixation:
+      self.visSys.setBuffer('intent', 'hold')  # ask visual system to hold fixation till we've processed it (subject to a max hold time)
+      self.newFixation = False  # pass hold intent only once
+    
+    if not self.processFixation:  # to prevent repeated processing of the same fixation location (double-counting)
+      return True
+    
+    # Get foveal/fixated image area: Use key/channel = 'BGR' for full-color matching, 'V' for intensity only, 'H' for hue only (colored bars), etc.
+    #imageFovea = self.visSys.getFovealImage(self.featureChannel)
+    imageFovea = self.visSys.getFixatedImage(self.featureChannel)  # TODO: rename imageFovea -> imageInFocus?
     #imageFovea = cv2.cvtColor(imageFovea, cv2.COLOR_BGR2GRAY)  # convert BGR to grayscale, if required
     
     matchO, minMatchO, maxMatchO, minMatchLocO, maxMatchLocO = self.getMatch(imageFovea, self.o_pattern)
@@ -155,25 +184,29 @@ class ZelinksyFinder(VisualSearchAgent):
     self.logger.info("Best match: {}: {:.3f} at {} (O: [{:.3f}, {:.3f}] vs Q: [{:.3f}, {:.3f}])".format(bestMatch, bestMatchValue, bestMatchLoc, minMatchO, maxMatchO, minMatchQ, maxMatchQ))
     if bestMatchValue <= self.max_match_sqdiff and abs(matchValueO - matchValueQ) >= self.min_confidence_sqdiff:
       # We have a good match
+      self.numFixations += 1  # can be treated as a valid fixation
+      self.processFixation = False  # make sure we don't process this fixated location again
       if self.context.options.gui:  # if GUI, mark matched region
         cv2.rectangle(imageFovea, bestMatchLoc, (bestMatchLoc[0] + self.o_pattern.shape[1], bestMatchLoc[1] + self.o_pattern.shape[0]), int(255 * (1.0 - bestMatchValue)), 1)  # SQDIFF
       
       # Now decide what to do based on match
       if bestMatch == self.target:  # found the target!
+        self.logger.info("Target found!")
         self.respond('y')
         return False  # end trial
       else:  # nope, this ain't the target
         self.numDistractorsSeen += 1
-        if self.numDistractorsSeen >= self.numStimuli:  # all stimuli were distractors, no target
+        self.logger.info("Distractor (num seen: {})".format(self.numDistractorsSeen))
+        if self.numDistractorsSeen >= self.numStimuli or self.numFixations >= self.maxFixations:  # all stimuli were (probably) distractors, no target
           self.respond('n')
           return False  # end trial
         else:
-          pass  # TODO: inhibit and move on
+          self.visSys.setBuffer('intent', 'release')  # let visual system inhibit and move on
     
     if self.context.options.gui:
       cv2.imshow("Fovea", imageFovea)
-      cv2.imshow("Match (O)", matchO)
-      cv2.imshow("Match (Q)", matchQ)
+      #cv2.imshow("Match (O)", matchO)
+      #cv2.imshow("Match (Q)", matchQ)
     
     return True
   
@@ -188,7 +221,8 @@ class ZelinksyFinder(VisualSearchAgent):
     return match8, minMatch, maxMatch, minMatchLoc, maxMatchLoc
   
   def respond(self, key):
-    self.logger.info("Response: {}".format(key))  # TODO: press key
+    # TODO: press key
+    self.logger.info("Response: {}, time: {}, numFixations: {}, firstSaccadeLatency: {}, input: {}".format(key, self.context.timeNow, self.numFixations, self.firstSaccadeLatency, os.path.basename(self.context.options.input_source) if (self.context.isImage or self.context.isVideo) else 'live/rpc'))
 
 
 if __name__ == "__main__":

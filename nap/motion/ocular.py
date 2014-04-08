@@ -16,8 +16,8 @@ class EmulatedOcularMotionSystem(OcularMotionSystem):
   """Eye movements emulated by a moving window over input image stream."""
   
   velocity_factor = 0.9  # per sec; weight that controls how target distance affects velocity
-  max_velocity = 200  # pixels per sec; maximum velocity with which eye can move
-  min_distance = 10  # pixels
+  max_velocity = 300  # pixels per sec; maximum velocity with which eye can move
+  min_distance = 5  # pixels
   min_delta_distance = 2  # pixels
   
   def __init__(self, projector=None, timeNow=0.0):
@@ -47,22 +47,25 @@ class EmulatedOcularMotionSystem(OcularMotionSystem):
         delta = self.v * deltaTime  # delta distance to move in this update
         delta_mag = np.linalg.norm(delta, ord=2)  # delta distance magnitude
         #self.logger.debug("delta: (%d, %d), mag: %d", delta[0], delta[1], delta_mag)  # [verbose]
-        if delta_mag >= self.min_delta_distance:  # no point trying to move otherwise
-          if delta_mag > d_mag:
-            delta = self.d  # prevent overshoot
-            self.d.fill(0.0)
-          else:
-            self.d -= delta
-          
-          #self.logger.debug("Moving by: %g, %g", delta[0], delta[1])  # [verbose]
-          if not self.projector.shiftFocus(deltaX=int(delta[0]), deltaY=int(delta[1])):  # returns False if not movement occurred
-            self.stop()
-          
-          self.lastMovementTime = self.timeNow  # don't update time otherwise, delta would be remain too small
+        if delta_mag < self.min_delta_distance:  # no point trying to move otherwise
+          delta *= self.min_delta_distance / delta_mag
+          delta_mag = self.min_delta_distance
+        
+        if delta_mag > d_mag:
+          delta = self.d  # prevent overshoot
+          self.d.fill(0.0)
+        else:
+          self.d -= delta
+        
+        #self.logger.debug("Moving by: %g, %g", delta[0], delta[1])  # [verbose]
+        if not self.projector.shiftFocus(deltaX=int(delta[0]), deltaY=int(delta[1])):  # returns False if not movement occurred
+          self.stop()
+        
+        self.lastMovementTime = self.timeNow  # don't update time otherwise, delta would remain too small
   
   def move(self, d):
     self.d = d
-    self.logger.debug("Moving to: %d, %d", self.d[0], self.d[1])  # [verbose]
+    self.logger.info("Moving to: %d, %d at %.3f", self.d[0], self.d[1], self.timeNow)  # [verbose]
     self.isMoving = True
     self.lastMovementTime = self.timeNow
   

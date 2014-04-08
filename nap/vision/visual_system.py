@@ -5,7 +5,7 @@ import logging
 import numpy as np
 import cv2
 import cv2.cv as cv
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from itertools import izip
 
 #import pyNN.neuron as sim
@@ -56,6 +56,34 @@ class VisualFeaturePathway(object):
     return "{obj.label}-pathway: active: {obj.active}, p: {obj.p}, output: {output}".format(obj=self, output=(self.output.neurons[0].potential if self.output is not None and len(self.output.neurons) > 0 else None))
 
 
+class Finst(object):
+  """Finger of INSTantiation: A percept defined by a location in allocentric space, used for modulating attention."""
+  
+  max_activation = 1.0
+  half_life = 5.0
+  min_good_activation = 0.1  # FINSTs with activation less than this could be discarded
+  
+  default_radius = 32
+  
+  def __init__(self, location, focusPoint, radius=default_radius, timeCreated=0.0, activationCreated=max_activation):
+    self.location = location  # egocentric fixation location at time of creation
+    self.focusPoint = focusPoint  # allocentric focus point at time of creation
+    self.radius = radius  # an indicator of size
+    self.timeCreated = timeCreated  # creation time
+    self.activationCreated = activationCreated  # a measure of the strength of the FINST upon creation
+    self.update(timeCreated)
+  
+  def update(self, timeNow):
+    deltaTime = timeNow - self.timeCreated
+    self.activation = self.activationCreated / (2 ** (deltaTime / self.half_life))
+  
+  def getAdjustedLocation(self, focusPoint):
+    return (self.location[0] + self.focusPoint[0] - focusPoint[0], self.location[1] + self.focusPoint[1] - focusPoint[1])
+  
+  def __str__(self):
+    return "<loc: {self.location}, focus: {self.focusPoint}, act: {self.activation:.3f}>".format(self=self)
+
+
 class VisualSystem(object):
   """Complete system for processing dynamic visual input."""
   
@@ -71,18 +99,24 @@ class VisualSystem(object):
   num_salience_neurons = 400
   num_selection_neurons = 100
   
+  num_finsts = 5  # no. of visual FINSTs
+  finst_decay_enabled = False  # if enabled, FINST activations will be updated and those with low activation will be purged
+  
   max_free_duration = 2.0  # artificial bound to prevent no results in case of very low salience inputs
   min_saccade_duration = 0.05  # human: 0.02s (20ms)
   #max_saccade_duration = 0.5  # human: 0.2s (200ms); not used as we end saccade period when ocular motion stops
   min_fixation_duration = 0.5  # human: 0.1s (100ms), varies based by activity
   max_fixation_duration = 3.0  # human: 0.5s (500ms), varies considerably by activity, affected by cognitive control
+  max_hold_duration = 5.0
 
   min_good_salience = 0.66  # recommended values: 0.66 (filters out most unwanted regions)
   min_saccade_salience = 0.175  # minimum salience required to make a saccade to (otherwise reset to center)
   
   foveal_radius_ratio = 0.2  # fraction of distance from center to corners of the retina that is considered to be in foveal region
   #default_fovea_size = (int(foveal_radius_ratio * default_image_size[0]), int(foveal_radius_ratio * default_image_size[1]))
-  default_fovea_size = (88, 88)  # fixed size; specify None to compute using foveal radius and image size in __init__()
+  default_fovea_size = (100, 100)  # fixed size; specify None to compute using foveal radius and image size in __init__()
+  
+  central_radius_ratio = 0.5  # radius to mark central region where visual acuity is modest and then falls off with eccentricity
   
   def __init__(self, imageSize=default_image_size, foveaSize=default_fovea_size, timeNow=0.0, showMonitor=True, ocularMotionSystem=None):
     # * Get context and logger
@@ -109,7 +143,8 @@ class VisualSystem(object):
     self.fovealRadius = hypot(self.imageCenter[0], self.imageCenter[1]) * self.foveal_radius_ratio
     if self.foveaSize is None:
       self.foveaSize = (int(self.fovealRadius * 2), int(self.fovealRadius * 2))
-    self.fovealSlice = np.index_exp[int(self.imageCenter[0] - self.foveaSize[0] / 2):int(self.imageCenter[0] + self.foveaSize[0] / 2), int(self.imageCenter[1] - self.foveaSize[1] / 2):int(self.imageCenter[1] + self.foveaSize[1] / 2)]
+    self.fovealSlice = np.index_exp[int(self.imageCenter[1] - self.foveaSize[1] / 2):int(self.imageCenter[1] + self.foveaSize[1] / 2), int(self.imageCenter[0] - self.foveaSize[0] / 2):int(self.imageCenter[0] + self.foveaSize[0] / 2)]
+    self.fixationSlice = self.fovealSlice
     self.imageShapeC3 = (self.imageSize[1], self.imageSize[0], 3)  # numpy shape for 3 channel images
     self.imageShapeC1 = (self.imageSize[1], self.imageSize[0])  # numpy shape for single channel images
     # NOTE Image shapes (h, w, 1) and (h, w) are not compatible unless we use keepdims=True for numpy operations
@@ -167,7 +202,7 @@ class VisualSystem(object):
     
     # ** Spatial weight map with a central soft spotlight (use np.ogrid?)
     self.images['Weight'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
-    cv2.circle(self.images['Weight'], self.imageCenter, self.imageSize[0] / 3, 1.0, cv.CV_FILLED)
+    cv2.circle(self.images['Weight'], self.imageCenter, int(self.imageSize[0] * self.central_radius_ratio), 1.0, cv.CV_FILLED)
     self.images['Weight'] = cv2.blur(self.images['Weight'], (self.imageSize[0] / 4, self.imageSize[0] / 4))  # coarse blur
     
     # * Image processing elements
@@ -204,6 +239,10 @@ class VisualSystem(object):
     self.saccadeSalience = 0.0  # salience of last location we moved to
     self.saccadeTarget = (0, 0)  # center-relative
     #self.lastSaccadeTime = self.timeNow  # [unused]
+    self.fixationLoc = None  # not None when fixated
+    
+    # * FINSTs for maintaining attended locations
+    self.finsts = deque(maxlen=self.num_finsts)
     
     # * Output image and plots
     self.imageOut = None
@@ -322,6 +361,20 @@ class VisualSystem(object):
       self.images['Salience'] = np.maximum(self.images['Salience'], np.sqrt(self.featurePathways[ganglionType].p) * ganglionImage)  # take maximum, scaled by feature pathway probabilities (for display only)
       #self.images['Salience'] = self.images['Salience'] + (self.numGanglionTypes_inv * np.sqrt(self.featurePathways[ganglionType].p) * ganglionImage)  # take normalized sum (mixes up features), scaled by feature pathway probabilities (for display only)
     
+    # * Update FINSTs if decay is enabled (otherwise activation doesn't change, FINSTs are purged when there's no more room)
+    if self.finst_decay_enabled:
+      for finst in self.finsts:
+        finst.update(self.timeNow)
+      # Remove stale FINSTs (TODO: use priority queue, don't depend on FINSTs being sorted by activation)
+      while self.finsts and self.finsts[0].activation < Finst.min_good_activation:
+        self.finsts.popleft()
+    
+    # * Apply inhibition based on FINSTs
+    if self.finsts:
+      self.logger.debug("Current FINSTs: {}".format(", ".join(str(finst) for finst in self.finsts)))
+      for finst in self.finsts:
+        self.inhibitMapAtFinst(self.images['Salience'], finst)
+    
     self.images['Salience'] = cv2.blur(self.images['Salience'], (3, 3))  # blur slightly to smooth out specs
     self.images['Salience'] *= self.images['Weight']  # effectively reduces salience around the edges (which can sometime give artificially high values due to partial receptive fields)
     _, self.maxSalience, _, self.maxSalienceLoc = cv2.minMaxLoc(self.images['Salience'])  # find out most salient location (from combined salience map)
@@ -407,6 +460,13 @@ class VisualSystem(object):
       elif self.timeNow > (self.lastTransitionTime + self.max_free_duration):  # we've been waiting too long, nothing significant, let's reset
         self.performSaccade(None)  # TODO: Probabilistically choose a not-so-good location?
     elif self.state == self.State.FIXATE:
+      # Update fixation location (first time this fixation only)
+      # TODO: Maybe a good idea to use a new FIXATED state after FIXATE?
+      if self.fixationLoc is None:
+        self.fixationLoc = self.maxSalienceLoc
+        self.fixationSlice = np.index_exp[int(self.fixationLoc[1] - self.foveaSize[1] / 2):int(self.fixationLoc[1] + self.foveaSize[1] / 2), int(self.fixationLoc[0] - self.foveaSize[0] / 2):int(self.fixationLoc[0] + self.foveaSize[0] / 2)]
+        # NOTE: This slice could be smaller than self.foveaSize
+        self.logger.info("Fixated at: {}, fixation slice: {}".format(self.fixationLoc, self.fixationSlice))
       # Update feature vector representing current state of neurons
       self.logger.debug("[{:.2f}] Features: {}".format(self.timeNow, self.featureVector))  # [verbose]
       self.buffers['features'].set_out(dict(izip(self.featureLabels, self.featureVector)))  # TODO: find a better way than zipping every iteration (named tuple or something?)
@@ -415,13 +475,21 @@ class VisualSystem(object):
         # TODO: Compute utility based on duration of fixation (falling activation), match and/or salience
         # TODO: If very high utility, turn on hold (assuming agent will ask us to release)
         #       If low utility or past max_fixation_duration, switch to FREE state and look somewhere else
-        maxSalienceLocDist = hypot(self.maxSalienceLoc[0], self.maxSalienceLoc[1])
+        maxSalienceLocDist = hypot(self.maxSalienceLoc[0] - self.fixationLoc[0], self.maxSalienceLoc[1] - self.fixationLoc[1])
+        
+        # Put a limit on hold
+        if self.hold and self.timeNow > (self.lastTransitionTime + self.max_hold_duration):
+          self.hold = False  # NOTE: This forcefully breaks a hold; might be better to depend on salient stimuli
+        
+        # Check for possible transitions out of FIXATE
         if not self.hold and \
             (maxSalienceLocDist > self.fovealRadius or \
              self.maxSalience < self.saccadeSalience or \
              self.timeNow > (self.lastTransitionTime + self.max_fixation_duration)):
-          # TODO: Put a max duration on hold?
-          # TODO: Inhibit current location before switching to FREE
+          # Create FINST to inhibit current location in future, before switching to FREE
+          if self.maxSalience >= self.min_saccade_salience:  # if current location is still salient enough to elicit a saccade
+            self.finsts.append(Finst(self.fixationLoc, self.ocularMotionSystem.getFocusPoint(), timeCreated=self.timeNow))  # TODO: pass in activationCreated once FINSTs are stored in priority queue
+          self.fixationLoc = None  # set to None to indicate we're no longer fixated; next fixation will store a new location
           self.transition(self.State.FREE)
     
     # * Show output images if in GUI mode
@@ -445,10 +513,12 @@ class VisualSystem(object):
       self.imageOut = self.images['Salience']  # make a copy?
       #_, self.imageOut = cv2.threshold(self.imageOut, 0.5, 1.0, cv2.THRESH_TOZERO)  # apply threshold to remove low-response regions
       self.imageOut = np.uint8(self.imageOut * 255)  # convert to uint8 image for display (is this necessary?)
-      if self.maxSalience > self.min_saccade_salience:
-        cv2.circle(self.imageOut, self.maxSalienceLoc, 2, 200, -1)  # mark most salient location with a dot
+      if self.maxSalience >= self.min_saccade_salience:
+        cv2.circle(self.imageOut, self.maxSalienceLoc, 3, 175, -1)  # mark most salient location with a small faint dot
         if self.maxSalience >= self.min_good_salience:
           cv2.circle(self.imageOut, self.maxSalienceLoc, int(self.maxSalience * 25), int(128 + self.maxSalience * 127), 1 + int(self.maxSalience * 4))  # highlight highly salient locations: larger, fatter, brighter for higher salience value
+      if self.state == self.State.FIXATE and self.fixationLoc is not None:
+        cv2.circle(self.imageOut, self.fixationLoc, 1, 225, -1)  # mark fixation location with a tiny bright dot
       cv2.putText(self.imageOut, self.State.toString(self.state) + (" (holding)" if self.hold else ""), (20, 30), cv2.FONT_HERSHEY_PLAIN, 1, 200)  # show current state
     
     return True, self.imageOut
@@ -497,6 +567,12 @@ class VisualSystem(object):
     else:
       self.logger.warning("Ocular motion system not found, skipping to FIXATE")
       self.transition(self.State.FIXATE)
+  
+  def inhibitMapAtFinst(self, imageMap, finst):
+    loc = finst.getAdjustedLocation(self.ocularMotionSystem.getFocusPoint())
+    cv2.circle(imageMap, loc, finst.radius, 0.0, cv.CV_FILLED)
+    #cv2.putText(imageMap, "{:.2f}".format(finst.timeCreated), (loc[0] + finst.radius, loc[1] - finst.radius), cv2.FONT_HERSHEY_PLAIN, 1, 0.0)  # [debug]
+    # TODO: Soft inhibition using finst.activation?
   
   def updateFeatureWeights(self, featureWeights, rest=None):
     """Update weights for features mentioned in given dict, using rest for others if not None."""
@@ -639,7 +715,15 @@ class VisualSystem(object):
   @rpc.enable_image
   def getFovealImage(self, key='BGR'):
     try:
-      return self.images[key][self.fovealSlice]  # TODO use area around actual fixation point (location buffer)
+      return self.images[key][self.fovealSlice]
+    except KeyError as e:
+      self.logger.error("Image KeyError: %s", e)
+    return None
+  
+  @rpc.enable_image
+  def getFixatedImage(self, key='BGR'):
+    try:
+      return self.images[key][self.fixationSlice]
     except KeyError as e:
       self.logger.error("Image KeyError: %s", e)
     return None
