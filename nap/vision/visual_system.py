@@ -78,17 +78,20 @@ class VisualSystem(object):
   max_fixation_duration = 3.0  # human: 0.5s (500ms), varies considerably by activity, affected by cognitive control
 
   min_good_salience = 0.66  # recommended values: 0.66 (filters out most unwanted regions)
-  min_saccade_salience = 0.25  # minimum salience required to make a saccade to (otherwise reset to center)
+  min_saccade_salience = 0.175  # minimum salience required to make a saccade to (otherwise reset to center)
   
   foveal_radius_ratio = 0.2  # fraction of distance from center to corners of the retina that is considered to be in foveal region
+  #default_fovea_size = (int(foveal_radius_ratio * default_image_size[0]), int(foveal_radius_ratio * default_image_size[1]))
+  default_fovea_size = (88, 88)  # fixed size; specify None to compute using foveal radius and image size in __init__()
   
-  def __init__(self, imageSize=default_image_size, timeNow=0.0, showMonitor=True, ocularMotionSystem=None):
+  def __init__(self, imageSize=default_image_size, foveaSize=default_fovea_size, timeNow=0.0, showMonitor=True, ocularMotionSystem=None):
     # * Get context and logger
     self.context = Context.getInstance()
     self.logger = logging.getLogger(self.__class__.__name__)
     
     # * Accept arguments, read parameters (TODO)
     self.imageSize = imageSize  # (width, height)
+    self.foveaSize = foveaSize
     self.timeNow = timeNow
     self.ocularMotionSystem = ocularMotionSystem  # for eye movements, if available
     
@@ -103,7 +106,10 @@ class VisualSystem(object):
     
     # * Images and related members (TODO do we need to initialize these at all? - new images are generated every update)
     self.imageCenter = (self.imageSize[1] / 2, self.imageSize[0] / 2)
-    self.fovealRadius = hypot(self.imageCenter[0], self.imageCenter[1]) / self.foveal_radius_ratio
+    self.fovealRadius = hypot(self.imageCenter[0], self.imageCenter[1]) * self.foveal_radius_ratio
+    if self.foveaSize is None:
+      self.foveaSize = (int(self.fovealRadius * 2), int(self.fovealRadius * 2))
+    self.fovealSlice = np.index_exp[int(self.imageCenter[0] - self.foveaSize[0] / 2):int(self.imageCenter[0] + self.foveaSize[0] / 2), int(self.imageCenter[1] - self.foveaSize[1] / 2):int(self.imageCenter[1] + self.foveaSize[1] / 2)]
     self.imageShapeC3 = (self.imageSize[1], self.imageSize[0], 3)  # numpy shape for 3 channel images
     self.imageShapeC1 = (self.imageSize[1], self.imageSize[0])  # numpy shape for single channel images
     # NOTE Image shapes (h, w, 1) and (h, w) are not compatible unless we use keepdims=True for numpy operations
@@ -626,6 +632,14 @@ class VisualSystem(object):
   def getImage(self, key='BGR'):
     try:
       return self.images[key]
+    except KeyError as e:
+      self.logger.error("Image KeyError: %s", e)
+    return None
+  
+  @rpc.enable_image
+  def getFovealImage(self, key='BGR'):
+    try:
+      return self.images[key][self.fovealSlice]  # TODO use area around actual fixation point (location buffer)
     except KeyError as e:
       self.logger.error("Image KeyError: %s", e)
     return None
