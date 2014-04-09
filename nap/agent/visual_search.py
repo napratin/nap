@@ -105,6 +105,7 @@ class ZelinksyFinder(VisualSearchAgent):
   State = Enum(('NONE', 'PRE_TRIAL', 'TRIAL', 'POST_TRIAL'))  # explicit tracking of experiment state (TODO: implement actual usage)
   
   def __init__(self, fixationSymbol=default_fixation_symbol, target=default_target, distractors=default_distractors, numStimuli=default_num_stimuli, numTrials=default_num_trials, featureChannel='V'):
+    VisualSystem.num_finsts = numStimuli  # override FINST size (TODO: make FINSTs fade out, design multi-scale FINSTs to cover larger areas/clusters for a better model)
     VisualSearchAgent.__init__(self)
     self.fixationSymbol = fixationSymbol
     self.target = target
@@ -115,7 +116,7 @@ class ZelinksyFinder(VisualSearchAgent):
     
     # * Configure visual system as needed (shorter times for fast completion goal, may result in some inaccuracy)
     self.visSys.max_free_duration = 0.25
-    self.visSys.max_fixation_duration = 1.0
+    self.visSys.max_fixation_duration = 0.5  # we don't need this to be high as we are using the hold-release pattern
     self.visSys.max_hold_duration = 2.0
     self.visSys.min_good_salience = 0.2  # this task is generally very low-salience
     #self.visSys.min_saccade_salience = 0.1
@@ -199,7 +200,7 @@ class ZelinksyFinder(VisualSearchAgent):
     
     # Compute matches and best match in a loop
     matches = [matcher.match(imageFovea) for matcher in self.patternMatchers.itervalues()]  # combined matching
-    #self.logger.info("Matches: %s", ", ".join("{}: {:.3f} at {}".format(match.matcher.name, match.value, match.location) for match in matches))  # combined reporting
+    self.logger.info("Matches: %s", ", ".join("{}: {:.3f} at {}".format(match.matcher.name, match.value, match.location) for match in matches))  # combined reporting
     
     #matchO = self.patternMatchers['O'].match(imageFovea)  # individual matching
     #self.logger.info("Match (O): value: {:.3f} at {}".format(matchO.value, matchO.location))  # individual reporting
@@ -312,5 +313,7 @@ class PatternMatcher(object):
 
 if __name__ == "__main__":
   #VisualSearchAgent().run()
-  ZelinksyFinder(target='Q', distractors=['O']).run()  # look for 'Q', single type of distractor: 'O' [default]
-  #ZelinksyFinder(target='O', distractors=None, numStimuli=17).run()  # look for 'O', everything else is a distractor; total expected stimuli = 17
+  # TODO: Make these command-line args
+  ZelinksyFinder(target='Q', distractors=['O'], numStimuli=5).run()  # look for 'Q', single type of distractor: 'O'; total expected stimuli = 5 [default]
+  #ZelinksyFinder(target='Q', distractors=None).run()  # look for 'O', everything else is a distractor
+  #ZelinksyFinder(target='O', distractors=['Q'], numStimuli=17).run()  # look for 'O', single distractor 'Q'; total expected stimuli = 17
