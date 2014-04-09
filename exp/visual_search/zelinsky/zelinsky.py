@@ -17,15 +17,27 @@ import os  # handy system and path functions
 
 # Experiment: zelinksy - a small set of visual search tasks
 # Based on Zelinksy et al. 1995, 1997
+import argparse
 from math import hypot, atan2
 from collections import OrderedDict
 
 # Trial parameters
-num_distractors = 4  # 4 or 16
-num_reps = 2  # NOTE: num_trials = num_reps * num_factors
-random_seed = num_distractors  # used to set numpy RNG's seed
-save_images = False  # TODO: complete this functionality, then enable to save snapshots
+argParser = argparse.ArgumentParser(description="Zelinsky search task")
+argParser.add_argument('--target', default='Q', choices=('Q', 'O'), help='target symbol (Q or O)')
+argParser.add_argument('--size', dest='num_stimuli', type=int, default=5, help='display size (no. of stimuli)')
+argParser.add_argument('--reps', dest='num_reps', type=int, default=2, help='no. of repetitions (#trials = num_reps * factor levels)')
+options = argParser.parse_args()
+
+# * Frozen factors (remaining factor: target presence)
+target = options.target  # 'Q' or 'O'
+num_stimuli = options.num_stimuli  # 5 or 17
+# * Repetitions
+num_reps = options.num_reps  # 128 (NOTE: num_trials = num_reps * all factor levels)
+# * Other, dependent
+distractor = 'O' if target == 'Q' else 'Q'  # 'O' or 'Q', determined by target
+random_seed = num_stimuli + ord(target)  # used to set numpy RNG's seed
 np.random.seed(random_seed)  # TODO: ensure no one else re-seeds this later
+save_images = False  # TODO: complete this functionality, then enable to save snapshots
 
 # [Serve] Imports and initialization (enable logging for debugging/testing only)
 from nap.util.net import ImageServerWindow
@@ -39,9 +51,11 @@ from nap.util.net import RemoteKeyboard
 
 # Store info about the experiment session
 expName = u'zelinsky'  # from the Builder filename that created this script
-expInfo = {u'session': u'000', u'participant': u'0', u'num_distractors': num_distractors}
-expInfo['date'] = data.getDateStr('%Y-%m-%d_%H-%M-%S')  # add a simple timestamp
+expInfo = {u'session': u'000', u'participant': u'0'}
 expInfo['expName'] = expName
+expInfo['date'] = data.getDateStr('%Y-%m-%d_%H-%M-%S')  # add a simple timestamp
+expInfo['target'] = target
+expInfo['num_stimuli'] = num_stimuli
 
 # Setup files for saving
 if not os.path.isdir('data'):
@@ -86,6 +100,7 @@ fixationCross = visual.TextStim(win=win, ori=0, name='fixationCross',
     color='white', colorSpace='rgb', opacity=1,
     depth=0.0)
 
+
 # Function defs
 """
 Convert from polar (r,w) to rectangular (x,y)
@@ -96,6 +111,8 @@ def rect(r, w, deg=1):  # radian if deg=0; degree if deg=1
     if deg:
         w = pi * w / 180.0
     return r * cos(w), r * sin(w)
+
+
 """
 Convert from rectangular (x,y) to polar (r,w)
     r = sqrt(x^2 + y^2)
@@ -107,48 +124,87 @@ def polar(x, y, deg=1): # radian if deg=0; degree if deg=1
     else:
         return hypot(x, y), atan2(y, x)
 
-# Define target and distractor stimuli
-targetBody = visual.Polygon(win=win, name='target',
-    edges = 30, size=[0.67, 0.67],
-    ori=0, pos=[0, 0],
-    lineWidth=2.0, lineColor=[1,1,1], lineColorSpace=u'rgb',
-    fillColor=[-1,-1,-1], fillColorSpace=u'rgb',
-    opacity=1,interpolate=True)
-targetMark = visual.Line(win=win, name='qmark',
-    start=(-[0.67, 0][0]/2.0, 0), end=(+[0.67, 0][0]/2.0, 0),
-    ori=90, pos=[0, 0.33],
-    lineWidth=2.0, lineColor=[1,1,1], lineColorSpace=u'rgb',
-    fillColor=[-1,-1,-1], fillColorSpace=u'rgb',
-    opacity=1,interpolate=True)
-targetMarkOffsetY = 0.33
 
-distractors = [None] * num_distractors
-for i in xrange(num_distractors):
-    distractors[i] = visual.Polygon(win=win, name='distractor_{}'.format(i),
-            edges = 30, size=[0.67, 0.67],
-            ori=0, pos=[0, 0],
-            lineWidth=2.0, lineColor=[1,1,1], lineColorSpace=u'rgb',
-            fillColor=[-1,-1,-1], fillColorSpace=u'rgb',
-            opacity=1,interpolate=True)
+# Define stimuli to be used as target and distractor, supporting functions
+def getStimulus(symbol):
+    stim = None
+    if symbol == 'Q':
+        stim = (visual.Polygon(win=win, name='Q_body',
+                    edges = 30, size=[0.67, 0.67],
+                    ori=0, pos=[0, 0],
+                    lineWidth=2.0, lineColor=[1,1,1], lineColorSpace=u'rgb',
+                    fillColor=[-1,-1,-1], fillColorSpace=u'rgb',
+                    opacity=1, interpolate=True),
+                visual.Line(win=win, name='Q_mark',
+                    start=(-[0.67, 0][0]/2.0, 0), end=(+[0.67, 0][0]/2.0, 0),
+                    ori=90, pos=[0, 0.33],
+                    lineWidth=2.0, lineColor=[1,1,1], lineColorSpace=u'rgb',
+                    fillColor=[-1,-1,-1], fillColorSpace=u'rgb',
+                    opacity=1, interpolate=True),
+                (0.0, 0.33))
+    elif symbol == 'O':
+        stim = visual.Polygon(win=win, name='O',
+                    edges = 30, size=[0.67, 0.67],
+                    ori=0, pos=[0, 0],
+                    lineWidth=2.0, lineColor=[1,1,1], lineColorSpace=u'rgb',
+                    fillColor=[-1,-1,-1], fillColorSpace=u'rgb',
+                    opacity=1, interpolate=True)
+    return stim
 
-# Precomputation
+
+# TODO: Define CompositeStim class to encapsulate this functionality
+def setStimulusPos(stim, pos, offset=(0.0, 0.0)):
+    if isinstance(stim, tuple):  # this is a composite stimulus: (body, mark, markOffset)
+        setStimulusPos(stim[0], pos)
+        setStimulusPos(stim[1], pos, stim[2])
+    else:
+        stim.setPos([pos[0] + offset[0], pos[1] + offset[1]])
+
+
+def startStimulus(stim):
+    if isinstance(stim, tuple):  # this is a composite stimulus: (body, mark, markOffset)
+        startStimulus(stim[0])
+        startStimulus(stim[1])
+    else:
+        stim.tStart = t  # underestimates by a little under one frame
+        stim.frameNStart = frameN  # exact frame index
+        stim.setAutoDraw(True)
+
+
+def stopStimulus(stim):
+    if isinstance(stim, tuple):  # this is a composite stimulus: (body, mark, markOffset)
+        stopStimulus(stim[0])
+        stopStimulus(stim[1])
+    else:
+        stim.setAutoDraw(False)
+
+
+targetStim = getStimulus(target)
+distractorStims = [None] * num_stimuli
+for i in xrange(num_stimuli):
+    distractorStims[i] = getStimulus(distractor)
+
+# Initialization, pre-computation
+print "Zelinsky search task"
+print "- target: {}, distractor: {}, num_stimuli: {}, num_reps: {}".format(target, distractor, num_stimuli, num_reps)
+print "Pre-computed stimulus position data:-"
 directions = np.linspace(0, 360, 16, endpoint=False)  # deg
 eccentricities = np.linspace(3, 6, 1)  # deg
-print "directions:", directions
-print "eccentricities:", eccentricities
+print "- directions:", directions
+print "- eccentricities:", eccentricities
 
 dir_by_ecc = OrderedDict()
 dir_by_ecc[3] = (22.5 + np.linspace(0, 360, 4, endpoint=False)) % 360
 dir_by_ecc[4] = (45 + np.linspace(0, 360, 8, endpoint=False)) % 360
 dir_by_ecc[5] = (22.5 + np.linspace(0, 360, 8, endpoint=False)) % 360
 dir_by_ecc[6] = (45 + np.linspace(0, 360, 4, endpoint=False)) % 360
-print "dir_by_ecc:", "\n  ".join("{}: {}".format(ecc, dirs) for ecc, dirs in dir_by_ecc.iteritems())
+print "- dir_by_ecc:\n  ", "\n  ".join("{}: {}".format(ecc, dirs) for ecc, dirs in dir_by_ecc.iteritems())
 
 positions = []
 for ecc, dirs in dir_by_ecc.iteritems():
     for dir in dirs:
         positions.append((ecc, dir))
-print "positions:", positions
+print "- positions:", positions
 
 dummy = visual.TextStim(win=win, ori=0, name='dummy',
     text=None,    font=u'Arial',
@@ -310,24 +366,22 @@ for thisBlock in block:
     frameN = -1
     # update component parameters for each repeat
     #present = np.random.choice(2)  # 0 or 1 [now from conditions file]
-    pos_indices = np.random.choice(len(positions), num_distractors + present, replace=False)  # position indices
+    pos_indices = np.random.choice(len(positions), num_stimuli, replace=False)  # position indices
     print "Trial: present:", present, ", pos_indices:", pos_indices
     
     # generate stimuli (target and distractors)
     stims = []
     for i, pos_idx in enumerate(pos_indices):
-        #print "i: {}, pos_idx: {}, pos: {}, stim: {}".format(i, pos_idx, positions[pos_idx], (target if i < present else distractor))  # [debug]
-        if present and i == (len(pos_indices) - 1):  # use last position for target (TODO: do this outside the loop?)
-            targetPos = rect(*positions[pos_idx])
-            targetBody.setPos(targetPos)
-            targetMark.setPos([targetPos[0], targetPos[1] + targetMarkOffsetY])
-            stims.append(targetBody)
-            stims.append(targetMark)
-            #print "Target at:", targetPos  # [debug]
+        pos = rect(*positions[pos_idx])
+        #print "i: {}, pos_idx: {}, pos (deg): {}, pos (rect): {}, stim: {}".format(i, pos_idx, positions[pos_idx], pos, (target if i < present else distractor))  # [debug]
+        if i < present:  # use first position for target, if present
+            setStimulusPos(targetStim, pos)
+            stims.append(targetStim)
+            #print "Target at:", pos  # [debug]
         else:  # all other position indices map nicely to distractors
-            distractors[i].setPos(rect(*positions[pos_idx]))
-            stims.append(distractors[i])
-            #print "Distractor:", distractors[i].pos  # [debug]
+            setStimulusPos(distractorStims[i], pos)
+            stims.append(distractorStims[i])
+            #print "Distractor at:", pos  # [debug]
     stims_status = NOT_STARTED  # to keep track of generated stimuli
     
     # save stimuli screens as images
@@ -367,9 +421,7 @@ for thisBlock in block:
         if t >= 1.5 and stims_status == NOT_STARTED:
             # start generated stimuli
             for stim in stims:
-                stim.tStart = t  # underestimates by a little under one frame
-                stim.frameNStart = frameN  # exact frame index
-                stim.setAutoDraw(True)
+                startStimulus(stim)
             stims_status = STARTED  # NOTE: have to manually set this
             #print "Stimuli started"  #[debug]
         #elif stims_status == STARTED and t >= (1.5 + 3.0):
@@ -429,7 +481,7 @@ for thisBlock in block:
     
     # stop generated stimuli
     for stim in stims:
-        stim.setAutoDraw(False)
+        stopStimulus(stim)
     stims_status = NOT_STARTED
     #print "Stimuli stopped"  # [debug]
     
