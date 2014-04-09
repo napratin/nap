@@ -6,11 +6,13 @@ import logging
 import argparse
 import numpy as np
 import cv2
+from collections import namedtuple, OrderedDict
 
 from lumos.context import Context
 from lumos.input import InputRunner
 from lumos import rpc
 from lumos.net import ImageServer
+from lumos.util import Enum
 
 from ..vision.visual_system import VisualSystem, VisionManager, FeatureManager, default_feature_weight, default_feature_weight_rest
 
@@ -25,7 +27,7 @@ class VisualSearchAgent(object):
     # * Create application context, passing in custom arguments, and get a logger
     argParser = argparse.ArgumentParser(add_help=False)
     argParser.add_argument('--features', type=str, default=None, help="features to look for, comma separated")
-    self.context = Context.createInstance(description="Visual search agent", parent_argparsers=[argParser])
+    self.context = Context.createInstance(description=self.__class__.__name__, parent_argparsers=[argParser])
     self.logger = logging.getLogger(self.__class__.__name__)
     
     # * Parse arguments
@@ -80,30 +82,36 @@ class VisualSearchAgent(object):
 class ZelinksyFinder(VisualSearchAgent):
   """A visual search agent that tries to find a target in a field of distractors (as per Zelinsky et al. 1995, 1997)."""
   
+  default_fixation_symbol = '+'  # just a name, actual pattern loaded from file
   default_target = 'Q'  # 'O' or 'Q' depending on condition
-  default_num_stimuli = 5  # 5 or 17 depending on condition 
+  default_distractor = 'O'  # commonly-used distractor
+  default_distractors = [default_distractor]  # one or more types of distractors
+  default_num_stimuli = 5  # 5 or 17 depending on condition
+  default_num_trials = 4  # total no. of trials we should run for
   
   #pattern_size = (48, 48)  # size of pattern image [unused]
   #o_radius = 16  # radius of O pattern [unused]
   
-  # NOTE: Pathnames relative to root of repository
-  fixcross_pattern_file = "res/data/visual-search/zelinsky-patterns/fixcross-pattern.png"
-  o_pattern_file = "res/data/visual-search/zelinsky-patterns/o-pattern.png"
-  q_pattern_file = "res/data/visual-search/zelinsky-patterns/q-pattern.png"
-  
-  detect_fixation = False  # TODO: complete fixation cross functionality (end trial, move to next), then enable this
-  
-  # TODO: Use a dict of patterns to evaluate, one of them target, one of them fixation cross?
+  # NOTE: Pathnames relative to root of repository (add more to enable matching with other shapes/patterns)
+  pattern_files = dict()
+  pattern_files[default_fixation_symbol] = "res/data/visual-search/zelinsky-patterns/fixcross-pattern.png"
+  pattern_files[default_target] = "res/data/visual-search/zelinsky-patterns/q-pattern.png"
+  pattern_files[default_distractor] = "res/data/visual-search/zelinsky-patterns/o-pattern.png"
   
   # TODO: These need to be updated according to fovea and pattern size
   max_match_sqdiff = 0.02  # max value of SQDIFF matching to be counted as a valid match
   min_confidence_sqdiff = 0.008  # min desired difference between activations for target and distractor (to avoid jumping to conclusion when there is confusion)
   
-  def __init__(self, target=default_target, numStimuli=default_num_stimuli, featureChannel='V'):
+  State = Enum(('NONE', 'PRE_TRIAL', 'TRIAL', 'POST_TRIAL'))  # explicit tracking of experiment state (TODO: implement actual usage)
+  
+  def __init__(self, fixationSymbol=default_fixation_symbol, target=default_target, distractors=default_distractors, numStimuli=default_num_stimuli, numTrials=default_num_trials, featureChannel='V'):
     VisualSearchAgent.__init__(self)
+    self.fixationSymbol = fixationSymbol
     self.target = target
+    self.distractors = distractors  # None (not supported yet) could mean everything else is a distractor (other than fixation symbol)
     self.featureChannel = featureChannel
     self.numStimuli = numStimuli
+    self.numTrials = numTrials
     
     # * Configure visual system as needed (shorter times for fast completion goal, may result in some inaccuracy)
     self.visSys.max_free_duration = 0.25
@@ -112,20 +120,28 @@ class ZelinksyFinder(VisualSearchAgent):
     self.visSys.min_good_salience = 0.2  # this task is generally very low-salience
     #self.visSys.min_saccade_salience = 0.1
     
-    # * Initialize shape patterns
-    # ** Generate  # [unused]
-    #self.o_pattern = np.zeros(self.pattern_size, dtype=np.float32)  # [unused]
-    #self.q_pattern = np.zeros(self.pattern_size, dtype=np.float32)  # [unused]
-    #cv2.circle(self.o_pattern, (self.pattern_size[1] / 2, self.pattern_size[0] / 2), self.o_radius, 1.0, 1)  # [unused]
-    # ** Load from files (NOTE: num channels must match selected feature channel)
-    self.fixcross_pattern = cv2.imread(self.fixcross_pattern_file, 0)  # pass flags=0 for grayscale
-    self.o_pattern = cv2.imread(self.o_pattern_file, 0)  # pass flags=0 for grayscale
-    self.q_pattern = cv2.imread(self.q_pattern_file, 0)  # pass flags=0 for grayscale
-    #cv2.imshow("Fixation cross pattern", self.fixcross_pattern)
-    #cv2.imshow("O pattern", self.o_pattern)
-    #cv2.imshow("Q pattern", self.q_pattern)
+    # * Initialize pattern matchers (load only those patterns that are needed; TODO: use different flags for each pattern? color/grayscale)
+    self.patternMatchers = OrderedDict()
+    missingPatterns = [] 
+    if self.fixationSymbol in self.pattern_files:
+      self.patternMatchers[self.fixationSymbol] = PatternMatcher(self.fixationSymbol, self.pattern_files[self.fixationSymbol], flags=0)  # pass flags=0 for grayscale
+    else:
+      missingPatterns.append(self.fixationSymbol)
+    if self.target in self.pattern_files:
+      self.patternMatchers[self.target] = PatternMatcher(self.target, self.pattern_files[self.target], flags=0)
+    else:
+      missingPatterns.append(self.target)
+    if self.distractors is not None:
+      for distractor in self.distractors:
+        if distractor in self.pattern_files:
+          self.patternMatchers[distractor] = PatternMatcher(distractor, self.pattern_files[distractor], flags=0)
+        else:
+          missingPatterns.append(self.fixationSymbol)
+    if missingPatterns:
+      self.logger.error("Patterns missing (matching may not be correct): {}".format(missingPatterns))
     
     # * Initialize matching-related objects
+    # TODO Turn this into a state machine + some vars
     self.numDistractorsSeen = 0  # if numDistractorsSeen >= numStimuli, no target is present
     self.newFixation = False
     self.processFixation = False  # used to prevent repeatedly processing a fixation period once a conclusive result has been reached
@@ -133,11 +149,15 @@ class ZelinksyFinder(VisualSearchAgent):
     self.numFixations = 0
     self.firstSaccadeLatency = None
     
+    # * Trial awareness
+    self.trialCount = 0
+    self.trialStarted = None  # None means we haven't seen fixation point yet, otherwise time trial began
+    
     # * Response output
     self.rpcClient = None
     try:
-      self.rpcClient = rpc.Client(port=ImageServer.default_port)
-      return  # skip checking, otherwise will block
+      self.rpcClient = rpc.Client(port=ImageServer.default_port, timeout=1000)
+      self.logger.info("Checking for remote keyboard via RPC")
       testResult = self.rpcClient.call('rpc.list')
       if testResult == None:
         self.logger.warning("Did not get RPC result (no remote keyboard)")
@@ -150,9 +170,9 @@ class ZelinksyFinder(VisualSearchAgent):
   
   def update(self):
     # TODO: If vision is fixated, hold, match shape patterns (templates) with fixation region
-    #       If it's a match for target, respond 'y' and return False to end
-    #       If not, increment distractor count; if numDistractorsSeen >= numStimuli, respond 'n' and return False to end
-    # NOTE(4/8): Above logic has mostly been implemented here
+    #       If it's a match for target, respond 'y' and end current trial
+    #       If not (and matches a distractor), increment distractor count; if numDistractorsSeen >= numStimuli, respond 'n' and end trial
+    # NOTE(4/8): Above logic has mostly been implemented here, save for repeated trial handling
     visState = self.visSys.getBuffer('state')
     if visState != VisualSystem.State.FIXATE:
       self.newFixation = True  # if system is not currently fixated, next one must be a fresh one
@@ -162,7 +182,6 @@ class ZelinksyFinder(VisualSearchAgent):
         self.logger.info("First saccade at: {}".format(self.firstSaccadeLatency))
       return True
     
-    #cv2.imshow("Fixation", self.visSys.getFixatedImage(self.featureChannel))  # [debug]
     if self.newFixation:
       self.visSys.setBuffer('intent', 'hold')  # ask visual system to hold fixation till we've processed it (subject to a max hold time)
       self.newFixation = False  # pass hold intent only once
@@ -174,84 +193,65 @@ class ZelinksyFinder(VisualSearchAgent):
     #imageFovea = self.visSys.getFovealImage(self.featureChannel)
     imageFovea = self.visSys.getFixatedImage(self.featureChannel)  # TODO: rename imageFovea -> imageInFocus?
     #imageFovea = cv2.cvtColor(imageFovea, cv2.COLOR_BGR2GRAY)  # convert BGR to grayscale, if required
+    #cv2.imshow("Fixation", self.visSys.getFixatedImage(self.featureChannel))  # [debug]
+    if imageFovea.shape[0] < self.visSys.foveaSize[0] or imageFovea.shape[1] < self.visSys.foveaSize[1]:
+      return True  # fixated on a weird, incomplete spot
     
-    if self.detect_fixation:
-      matchF, minMatchF, maxMatchF, minMatchLocF, maxMatchLocF = self.getMatch(imageFovea, self.fixcross_pattern)
-      self.logger.info("Match (F): min: {} at {}, max: {} at {}".format(minMatchF, minMatchLocF, maxMatchF, maxMatchLocF))
-      if minMatchF <= 0.001:
-        if hypot(*self.visSys.getBuffer('location')) < 20.0 and \
-            hypot(*self.visSys.ocularMotionSystem.getFocusOffset()) < 20.0:  # a fixation cross in the center!
-          self.logger.info("I think this is a fixation cross")
-          # TODO: Reset vision system and be ready (use state to prevent double action)
+    # Compute matches and best match in a loop
+    matches = [matcher.match(imageFovea) for matcher in self.patternMatchers.itervalues()]  # combined matching
+    #self.logger.info("Matches: %s", ", ".join("{}: {:.3f} at {}".format(match.matcher.name, match.value, match.location) for match in matches))  # combined reporting
     
-    matchO, minMatchO, maxMatchO, minMatchLocO, maxMatchLocO = self.getMatch(imageFovea, self.o_pattern)
-    #self.logger.info("Match (O): min: {} at {}, max: {} at {}".format(minMatchO, minMatchLocO, maxMatchO, maxMatchLocO))
+    #matchO = self.patternMatchers['O'].match(imageFovea)  # individual matching
+    #self.logger.info("Match (O): value: {:.3f} at {}".format(matchO.value, matchO.location))  # individual reporting
     
-    matchQ, minMatchQ, maxMatchQ, minMatchLocQ, maxMatchLocQ = self.getMatch(imageFovea, self.q_pattern)
-    #self.logger.info("Match (Q): min: {} at {}, max: {} at {}".format(minMatchQ, minMatchLocQ, maxMatchQ, maxMatchLocQ))
-    
-    # Method: SQDIFF
-    matchValueO = minMatchO
-    matchValueQ = minMatchQ
-    if minMatchO < minMatchQ:
-      bestMatch = 'O'
-      bestMatchValue = minMatchO
-      bestMatchLoc = minMatchLocO
-    else:
-      bestMatch = 'Q'
-      bestMatchValue = minMatchQ
-      bestMatchLoc = minMatchLocQ
-    
-    '''
-    # Method: CCORR, CCOEFF
-    if maxMatchO > maxMatchQ:
-      bestMatch = 'O'
-      bestMatchValue = maxMatchO
-      bestMatchLoc = maxMatchLocO
-    else:
-      bestMatch = 'Q'
-      bestMatchValue = maxMatchQ
-      bestMatchLoc = maxMatchLocQ
-    '''
-    
-    self.logger.info("Best match: {}: {:.3f} at {} (O: [{:.3f}, {:.3f}] vs Q: [{:.3f}, {:.3f}])".format(bestMatch, bestMatchValue, bestMatchLoc, minMatchO, maxMatchO, minMatchQ, maxMatchQ))
-    if bestMatchValue <= self.max_match_sqdiff and abs(matchValueO - matchValueQ) >= self.min_confidence_sqdiff:
+    bestMatch = min(matches, key=lambda match: match.value)  # TODO: sort to find difference between two best ones: (bestMatch[1].value - bestMatch[0].value) >= self.min_confidence_sqdiff
+    if bestMatch.value <= self.max_match_sqdiff:  # for methods CCORR, CCOEFF, use: bestMatch.value >= self.min_match_XXX
       # We have a good match
+      self.logger.info("Good match: {}: {:.3f} at {}".format(bestMatch.matcher.name, bestMatch.value, bestMatch.location))
       self.numFixations += 1  # can be treated as a valid fixation
       self.processFixation = False  # make sure we don't process this fixated location again
-      if self.context.options.gui:  # if GUI, mark matched region
-        cv2.rectangle(imageFovea, bestMatchLoc, (bestMatchLoc[0] + self.o_pattern.shape[1], bestMatchLoc[1] + self.o_pattern.shape[0]), int(255 * (1.0 - bestMatchValue)), 1)  # SQDIFF
+      if self.context.options.gui:  # if GUI, mark matched region (NOTE: this modifies foveal image!)
+        cv2.rectangle(imageFovea, bestMatch.location, (bestMatch.location[0] + bestMatch.matcher.pattern.shape[1], bestMatch.location[1] + bestMatch.matcher.pattern.shape[0]), int(255.0 * (1.0 - bestMatch.value)))
+        cv2.putText(imageFovea, str(bestMatch.matcher.name), (bestMatch.location[0] + 2, bestMatch.location[1] + 10), cv2.FONT_HERSHEY_PLAIN, 0.67, 200)
       
       # Now decide what to do based on match
-      if bestMatch == self.target:  # found the target!
+      symbol = bestMatch.matcher.name  # bestMatch.matcher.name contains the symbol specified when creating the corresponding pattern
+      if symbol == self.fixationSymbol:  # NOTE: system doesn't always catch fixation symbol, so don't rely on this - keep playing
+        if bestMatch.value <= 0.001 and \
+            hypot(*self.visSys.getBuffer('location')) < 20.0 and \
+            hypot(*self.visSys.ocularMotionSystem.getFocusOffset()) < 20.0:  # a fixation cross, and approx. in the center!
+          self.logger.info("Fixation symbol!")
+          # TODO: Prepare vision system to reset (hold till cross disappears? don't add FINST?) and be ready (use state to prevent double action)
+          if self.trialStarted is None:
+            self.logger.info("Trial {}: Fixation symbol seen; assuming trial starts now".format(self.trialCount))
+            self.trialStarted = self.context.timeNow
+          self.visSys.setBuffer('intent', 'release')  # let visual system inhibit and move on
+      elif symbol == self.target:  # found the target!
         self.logger.info("Target found!")
         self.respond('y')
-        return False  # end trial (TODO: start new trial?)
-      else:  # nope, this ain't the target
+        self.nextTrial()
+        return True  # ready for new trial
+        #return False  # end trial and stop this run
+      elif self.distractors is None or symbol in self.distractors:
         self.numDistractorsSeen += 1
-        self.logger.info("Distractor (num seen: {})".format(self.numDistractorsSeen))
+        self.logger.info("Distractor {}".format(self.numDistractorsSeen))
         if self.numDistractorsSeen >= self.numStimuli or self.numFixations >= self.maxFixations:  # all stimuli were (probably) distractors, no target
           self.respond('n')
-          return False  # end trial (TODO: start new trial?)
+          self.nextTrial()
+          return True  # ready for new trial
+          #return False  # end trial and stop this run
         else:
           self.visSys.setBuffer('intent', 'release')  # let visual system inhibit and move on
+      else:
+        self.logger.warning("I don't know what that is; ignoring fixation")
+        self.visSys.setBuffer('intent', 'release')  # let visual system inhibit and move on
     
     if self.context.options.gui:
       cv2.imshow("Fovea", imageFovea)
-      #cv2.imshow("Match (O)", matchO)
-      #cv2.imshow("Match (Q)", matchQ)
+      #for match in matches:
+      #  cv2.imshow("Match ({})".format(match.matcher.name), match.result)
     
     return True
-  
-  def getMatch(self, img, templ):
-    match = cv2.matchTemplate(img, templ, cv2.TM_SQDIFF)
-    match /= (match.shape[1] * match.shape[0] * 255.0 * 255.0)  # normalize it
-    #match = np.abs(match)
-    #val, match = cv2.threshold(match, 0.01, 0, cv2.THRESH_TOZERO)
-    minMatch, maxMatch, minMatchLoc, maxMatchLoc = cv2.minMaxLoc(match)
-    #match8 = cv2.normalize(match, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
-    match8 = np.uint8(match * 255.0)  # for display (better return None if no GUI)
-    return match8, minMatch, maxMatch, minMatchLoc, maxMatchLoc
   
   def respond(self, key):
     self.logger.info("Response: {}, time: {}, numFixations: {}, firstSaccadeLatency: {}, input: {}".format(key, self.context.timeNow, self.numFixations, self.firstSaccadeLatency, os.path.basename(self.context.options.input_source) if (self.context.isImage or self.context.isVideo) else 'live/rpc'))
@@ -261,8 +261,56 @@ class ZelinksyFinder(VisualSearchAgent):
       except Exception as e:
         self.logger.error("Error sending response key (will not retry): {}".format(e))
         self.rpcClient = None
+  
+  def nextTrial(self):
+    self.trialCount += 1
+    self.trialStarted = None
+    
+    self.numDistractorsSeen = 0
+    self.newFixation = False
+    self.processFixation = False
+    self.numFixations = 0
+    self.firstSaccadeLatency = None
+    
+    self.visSys.setBuffer('intent', 'reset')
+
+
+PatternMatch = namedtuple('PatternMatch', ['value', 'location', 'result', 'matcher'])
+
+
+class PatternMatcher(object):
+  """Helper class to perform simple pattern matching - a higher-level visual function not modeled in the framework."""
+  
+  default_method = cv2.TM_SQDIFF
+  
+  def __init__(self, name, pattern_file, flags=1, method=default_method):
+    """Load a pattern from file and specify a method for matching. Param flags is directly passed on to cv2.imread(): 1 = auto, 0 = grayscale."""
+    self.name = name
+    self.pattern_file = pattern_file
+    self.method = method
+    self.pattern = cv2.imread(self.pattern_file, flags)  # flags=0 for grayscale
+    #self.pattern = cv2.blur(self.pattern, (3, 3))  # not good for precise stimuli discrimination, like between O and Q-like
+    #cv2.imshow("Pattern ({})".format(self.name), self.pattern) ## [debug]
+  
+  def match(self, image):
+    """Match pattern with image, return a 3-tuple: (<uint8 result map>, <best match value>, <best match location>)."""
+    result = cv2.matchTemplate(image, self.pattern, self.method)
+    result /= (result.shape[1] * result.shape[0] * 255.0 * 255.0)  # normalize result, dividing by sum of max possible differences
+    #result = np.abs(result)
+    #val, result = cv2.threshold(result, 0.01, 0, cv2.THRESH_TOZERO)
+    minMatch, maxMatch, minMatchLoc, maxMatchLoc = cv2.minMaxLoc(result)
+    
+    #result_uint8 = cv2.normalize(result, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)  # normalize (issue is variable scale)
+    result_uint8 = np.uint8(result * 255.0)  # scale, for display (better avoid and return None if no GUI)
+    
+    #return result_uint8, minMatch, maxMatch, minMatchLoc, maxMatchLoc  # too many returns, generalize to *best* match value and loc
+    if self.method == cv2.TM_SQDIFF or self.method == cv2.TM_SQDIFF_NORMED:
+      return PatternMatch(value=minMatch, location=minMatchLoc, result=result_uint8, matcher=self)
+    else:  # TM_CCORR or TM_CCOEFF
+      return PatternMatch(value=maxMatch, location=maxMatchLoc, result=result_uint8, matcher=self)
 
 
 if __name__ == "__main__":
   #VisualSearchAgent().run()
-  ZelinksyFinder().run()
+  ZelinksyFinder(target='Q', distractors=['O']).run()  # look for 'Q', single type of distractor: 'O' [default]
+  #ZelinksyFinder(target='O', distractors=None, numStimuli=17).run()  # look for 'O', everything else is a distractor; total expected stimuli = 17

@@ -551,6 +551,7 @@ class VisualSystem(object):
     elif intent == 'release':
       self.hold = False  # system can resume FIXATE-SACCADE cycle
     elif intent == 'reset':
+      self.finsts.clear()
       self.transition(self.State.SACCADE)
       self.ocularMotionSystem.reset()  # reset to the center of visual stream
       self.hold = False

@@ -15,6 +15,18 @@ from numpy import sin, cos, tan, log, log10, pi, average, sqrt, std, deg2rad, ra
 from numpy.random import random, randint, normal, shuffle
 import os  # handy system and path functions
 
+# Experiment: zelinksy - a small set of visual search tasks
+# Based on Zelinksy et al. 1995, 1997
+from math import hypot, atan2
+from collections import OrderedDict
+
+# Trial parameters
+num_distractors = 4  # 4 or 16
+num_reps = 2  # NOTE: num_trials = num_reps * num_factors
+random_seed = num_distractors  # used to set numpy RNG's seed
+save_images = False  # TODO: complete this functionality, then enable to save snapshots
+np.random.seed(random_seed)  # TODO: ensure no one else re-seeds this later
+
 # [Serve] Imports and initialization (enable logging for debugging/testing only)
 from nap.util.net import ImageServerWindow
 ImageServerWindow.flipVertical = True  # psychopy uses (0, 0) to mean bottom-left
@@ -27,8 +39,8 @@ from nap.util.net import RemoteKeyboard
 
 # Store info about the experiment session
 expName = u'zelinsky'  # from the Builder filename that created this script
-expInfo = {u'session': u'000', u'participant': u'0'}
-expInfo['date'] = data.getDateStr()  # add a simple timestamp
+expInfo = {u'session': u'000', u'participant': u'0', u'num_distractors': num_distractors}
+expInfo['date'] = data.getDateStr('%Y-%m-%d_%H-%M-%S')  # add a simple timestamp
 expInfo['expName'] = expName
 
 # Setup files for saving
@@ -73,18 +85,6 @@ fixationCross = visual.TextStim(win=win, ori=0, name='fixationCross',
     pos=[0, 0], height=1, wrapWidth=None,
     color='white', colorSpace='rgb', opacity=1,
     depth=0.0)
-
-# Experiment: zelinksy - a small set of visual search tasks
-# Based on Zelinksy et al. 1995, 1997
-from math import hypot, atan2
-from collections import OrderedDict
-
-# Trial parameters
-num_distractors = 4  # 4 or 16
-num_reps = 2  # NOTE: num_trials = num_reps * num_factors
-random_seed = num_distractors  # used to set numpy RNG's seed
-save_images = False  # TODO: complete this functionality, then enable to save snapshots
-np.random.seed(random_seed)  # TODO: ensure no one else re-seeds this later
 
 # Function defs
 """
