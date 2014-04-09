@@ -26,6 +26,7 @@ argParser = argparse.ArgumentParser(description="Zelinsky search task")
 argParser.add_argument('--target', default='Q', choices=('Q', 'O'), help='target symbol (Q or O)')
 argParser.add_argument('--size', dest='num_stimuli', type=int, default=5, help='display size (no. of stimuli)')
 argParser.add_argument('--reps', dest='num_reps', type=int, default=2, help='no. of repetitions (#trials = num_reps * factor levels)')
+argParser.add_argument('--hide_text', action="store_true", help="hide instruction text? (useful for automated play)")
 options = argParser.parse_args()
 
 # * Frozen factors (remaining factor: target presence)
@@ -38,6 +39,10 @@ distractor = 'O' if target == 'Q' else 'Q'  # 'O' or 'Q', determined by target
 random_seed = num_stimuli + ord(target)  # used to set numpy RNG's seed
 np.random.seed(random_seed)  # TODO: ensure no one else re-seeds this later
 save_images = False  # TODO: complete this functionality, then enable to save snapshots
+if options.hide_text:
+    instructions = u""  # NOTE: pre-trial screen still waits for keypress
+else:
+    instructions = u"Experiment: Find the target\n\nAt the beginning of each trial, look at the cross.\nA set of shapes will then appear, with a possible target (odd one out).\nPress 'y' if you saw the target, 'n' if you didn't.\nTry to respond as quickly as you can.\n\n[Press any key to continue]"
 
 # [Serve] Imports and initialization (enable logging for debugging/testing only)
 from nap.util.net import ImageServerWindow
@@ -83,7 +88,7 @@ else:
 # Initialize components for Routine "instr"
 instrClock = core.Clock()
 instrText = visual.TextStim(win=win, ori=0, name='instrText',
-    text=u"Experiment: Find the target\n\nAt the beginning of each trial, look at the cross.\nA set of shapes will then appear, with a possible target (odd one out).\nPress 'y' if you saw the target, 'n' if you didn't.\nTry to respond as quickly as you can.\n\n[Press any key to continue]",    font=u'Arial',
+    text=instructions,    font=u'Arial',
     pos=[0, 0], height=0.5, wrapWidth=None,
     color=u'white', colorSpace=u'rgb', opacity=1,
     depth=0.0)
