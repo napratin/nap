@@ -4,26 +4,81 @@
 require(ggplot2)
 
 # Parameters (TODO: accept command-line arg)
-#exp_data = "data/0_2014-04-09_12-49-03.csv"  # Q, 5
-exp_data = "data/0_2014-04-09_06-32-23.csv"  # O, 17
-plot_size = c(4, 4)
+drop_incorrect = TRUE  # drop trials with incorrect answer
+plot_size = c(7, 4)  # c(4, 4) for single plots, c(7, 4) for side-by-side
+
+## Input data: One combined file
+data_file = "data/all_2014-04-09.csv"  # uncomment to read this single file
+
+## Input data: Individual runs to combine
+Q_5 = "data/Q_5_256_0_2014-04-09_12-49-03.csv"
+Q_17 = "data/Q_17_256_0_2014-04-09_16-05-42.csv"
+O_5 = "data/O_5_256_0_2014-04-09_17-56-49.csv"
+O_17 = "data/O_17_256_0_2014-04-09_18-58-21.csv"
+#data_file_list = c(Q_5, Q_17, O_5, O_17)  # uncomment to read all files in this list
+
+# Utility functions
+## Standard error of the mean (stdErr); for error bars: lower limit (errBarLow), upper limit (errBarHigh)
+stdErr <- function(x) { sqrt(var(x, na.rm=TRUE) / length(na.omit(x))) }
+errBarLow <- function(x) { return(mean(x) - stdErr(x)) }
+errBarHigh <- function(x) { return(mean(x) + stdErr(x)) }
+
+# TODO: Compute within subject variablility error bars as per Zelinksy paper
+
+## Data reading
+readData <- function(filename) {
+	cat("Reading data file:", filename, "\n")
+	dat_ = read.csv(filename, header=TRUE)
+	dat_ = dat_[, (colnames(dat_) != 'X')]  # drop extra NA col that PsychoPy adds, if any
+	return(dat_)
+}
+
+readDataAll <- function() {
+	dat_all = NULL
+	for (filename in data_file_list) {
+		dat_ = readData(filename)
+		if(is.null(dat_all)) {
+			dat_all = dat_
+		}
+		else {
+			dat = rbind(dat_all, dat_)
+		}
+	}
+	return(dat_all)
+}
 
 # Read data
-dat = read.csv(exp_data, header=TRUE)
-dat = dat[, (colnames(dat) != 'X')]  # drop extra NA col that PsychoPy adds, if any
+if(exists("data_file")) {
+	dat = readData(data_file)
+} else if(exists("data_file_list")) {
+	dat = readDataAll(data_file_list)
+}
 
 # Convert appropriate columns to factors
-dat$present = factor(dat$present, levels=c(1, 0), labels=c('Positive', 'Negative'))
+if(!is.factor(dat$present)) {
+	dat$present = factor(dat$present, levels=c(1, 0), labels=c('Positive', 'Negative'))  # convert
+} else if(all(levels(dat$present) == c('Negative', 'Positive'))) {
+	dat$present <- factor(dat$present, levels=c('Positive', 'Negative'), labels=c('Positive', 'Negative'))  # re-order
+}
 
 # Data cleaning
-dat = dat[dat$response.corr==1,]
+if (drop_incorrect) {
+	dat = dat[dat$response.corr==1,]
+}
 
-# Boxplot
-rtPlot = ggplot(dat, aes(present, y=response.rt, fill=present)) +
-  geom_boxplot() +
-  #coord_cartesian(ylim=quantile(dat$response.rt, c(0.0001, 0.99))) +  # prevent outliers from skewing plot
-  guides(fill=FALSE) +
-  xlab("Target presence") + ylab("Reaction Time (sec)") +
+# Data summary
+#dat_sum <- summarySE(dat, measurevar="response.rt", groupvars=c("target", "num_stimuli"))
+
+# Plot
+rtPlot = ggplot(dat, aes(x=as.factor(num_stimuli), y=response.rt, colour=target, shape=target)) +
+  stat_summary(aes(group=target), fun.y=mean, geom="line", size=0.75) +
+  stat_summary(fun.y=mean, geom="point", size=1.25) +
+  stat_summary(fun.ymin=errBarLow, fun.ymax=errBarHigh, geom="errorbar", width=0.125) +
+  facet_grid(. ~ present) +
+  scale_colour_discrete(name="Task", breaks=c('Q', 'O'), labels=c("Parallel", "Serial")) +
+  scale_shape_discrete(name="Task", breaks=c('Q', 'O'), labels=c("Parallel", "Serial")) +
+  guides(colour=guide_legend(title=NULL), shape=guide_legend(title=NULL)) +
+  xlab("Display size") + ylab("Reaction Time (sec)") +
   ggtitle(sprintf("Zelinsky search task\ntarget: %s; display size: %s; #trials: %d",
             paste(unique(dat$target), collapse=", "),
             paste(unique(dat$num_stimuli), collapse=", "),
