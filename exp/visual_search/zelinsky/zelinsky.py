@@ -54,6 +54,15 @@ from nap.util.net import RemoteKeyboard
 # NOTE This should expose a Keyboard.keyPress RPC call, activated when RPC server is started.
 #      E.g.: When ImageServerWindow is initialized.
 
+# [Log] Record experiment events to file
+import time
+from lumos.net import EventLogger
+logEvents = True
+if logEvents:
+    eventTag = "TRIAL"
+    eventFilename = "logs/trial-events_{}_{}_{}.log".format(target, num_stimuli, time.strftime(EventLogger.timestamp_format, time.localtime(time.time())))
+    eventLogger = EventLogger(eventFilename, rpc_export=False, start_server=False)  # no need to expose event logger, this is for local logging only (TODO: design a logger proxy and then enable this to provide a common logging target)
+
 # Store info about the experiment session
 expName = u'zelinsky'  # from the Builder filename that created this script
 expInfo = {u'session': u'000', u'participant': u'0'}
@@ -372,7 +381,7 @@ for thisBlock in block:
     # update component parameters for each repeat
     #present = np.random.choice(2)  # 0 or 1 [now from conditions file]
     pos_indices = np.random.choice(len(positions), num_stimuli, replace=False)  # position indices
-    print "Trial: present:", present, ", pos_indices:", pos_indices
+    print "Trial {}: present: {}, target: {}, num_stimuli: {} pos_indices: {}".format(block.thisN, present, target, num_stimuli, pos_indices)
     
     # generate stimuli (target and distractors)
     stims = []
@@ -429,6 +438,8 @@ for thisBlock in block:
                 startStimulus(stim)
             stims_status = STARTED  # NOTE: have to manually set this
             #print "Stimuli started"  #[debug]
+            if logEvents:  # log trial start
+                eventLogger.log(eventTag, "start\t{}\t{}\t{}\t{}\t{}\t{}".format(block.thisN, present, target, num_stimuli, -1, t))  # -1 signifies unknown
         #elif stims_status == STARTED and t >= (1.5 + 3.0):
         #    pass  # will be stopped at the end of the trial
         
@@ -458,6 +469,8 @@ for thisBlock in block:
                 else: response.corr=0
                 # a response ends the routine
                 continueRoutine = False
+                if logEvents:  # log trial end
+                    eventLogger.log(eventTag, "end\t{}\t{}\t{}\t{}\t{}\t{}".format(block.thisN, present, target, num_stimuli, response.corr, t))
         
         # check if all components have finished
         if not continueRoutine:  # a component has requested a forced-end of Routine

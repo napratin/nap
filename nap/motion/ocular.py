@@ -1,10 +1,12 @@
 """Ocular motion module to model eye movements."""
 
+import time
 import logging
 import numpy as np
 
 from lumos.context import Context
 from lumos.input import Projector, InputRunner
+from lumos.net import EventLogger
 
 
 class OcularMotionSystem(object):
@@ -15,6 +17,7 @@ class OcularMotionSystem(object):
 class EmulatedOcularMotionSystem(OcularMotionSystem):
   """Eye movements emulated by a moving window over input image stream."""
   
+  tag = "OCULAR"  # mainly used for logging
   velocity_factor = 0.9  # per sec; weight that controls how target distance affects velocity
   max_velocity = 300  # pixels per sec; maximum velocity with which eye can move
   min_distance = 5  # pixels
@@ -29,6 +32,7 @@ class EmulatedOcularMotionSystem(OcularMotionSystem):
     self.d = np.float32([0.0, 0.0])  # relative distance to move (x, y)
     self.v = np.float32([0.0, 0.0])  # velocity to move with (x, y)
     # TODO: Switch to (r, theta) coordinates? (makes more sense, easier to handle magnitudes)
+    self.logEvents = False  # log file is created when enabled
   
   def update(self, timeNow):
     self.timeNow = timeNow
@@ -65,21 +69,30 @@ class EmulatedOcularMotionSystem(OcularMotionSystem):
   
   def move(self, d):
     self.d = d
-    self.logger.info("Moving to: %d, %d at %.3f", self.d[0], self.d[1], self.timeNow)  # [verbose]
+    if self.logEvents:
+      self.eventLogger.log(self.tag, "move\t{}\t{}\t{}".format(self.d[0], self.d[1], self.timeNow))
+    #self.logger.info("Moving to: %d, %d at %.3f", self.d[0], self.d[1], self.timeNow)  # [verbose]
     self.isMoving = True
     self.lastMovementTime = self.timeNow
   
   def stop(self):
+    if self.logEvents:
+      self.eventLogger.log(self.tag, "stop\t{}\t{}\t{}".format(self.d[0], self.d[1], self.timeNow))
     self.d.fill(0.0)
     self.v.fill(0.0)
     self.isMoving = False
-    self.logger.debug("Stopped")  # [verbose]
+    #self.logger.debug("Stopped")  # [verbose]
   
   def reset(self):
     self.logger.debug("Reset")  # [verbose]
     offset = self.getFocusOffset()
     self.move(np.int_([-offset[0], -offset[1]]))  # move back to center
   
+  def enableEventLogging(self, filename_prefix="ocular-events", rpc_export=False, start_server=False):
+    eventFilename = "logs/{}_{}.log".format(filename_prefix, time.strftime(EventLogger.timestamp_format, time.localtime(time.time())))
+    self.eventLogger = EventLogger(eventFilename, rpc_export=rpc_export, start_server=start_server)
+    self.logEvents = True
+
   def getFocusPoint(self):
     return self.projector.focusPoint
   

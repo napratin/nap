@@ -31,7 +31,7 @@ class VisualSearchAgent(object):
     self.logger = logging.getLogger(self.__class__.__name__)
     
     # * Parse arguments
-    self.features = self.context.options.features.split(',') if self.context.options.features is not None else []
+    self.features = self.context.options.features.split(',') if (hasattr(self.context.options, 'feature') and self.context.options.features is not None) else []
     self.featureWeights = dict()
     for feature in self.features:
       if ':' in feature:  # check for explicit weights, e.g. RG:0.8,BY:0.75
@@ -120,6 +120,7 @@ class ZelinksyFinder(VisualSearchAgent):
     self.visSys.max_hold_duration = 2.0
     self.visSys.min_good_salience = 0.2  # this task is generally very low-salience
     #self.visSys.min_saccade_salience = 0.1
+    self.visSys.ocularMotionSystem.enableEventLogging("ocular-events_{}".format(self.target))
     
     # * Initialize pattern matchers (load only those patterns that are needed; TODO: use different flags for each pattern? color/grayscale)
     self.patternMatchers = OrderedDict()
@@ -226,7 +227,7 @@ class ZelinksyFinder(VisualSearchAgent):
           if self.trialStarted is None:
             self.logger.info("Trial {}: Fixation symbol seen; assuming trial starts now".format(self.trialCount))
             self.trialStarted = self.context.timeNow
-          self.visSys.setBuffer('intent', 'release')  # let visual system inhibit and move on
+        self.visSys.setBuffer('intent', 'release')  # let visual system inhibit and move on
       elif symbol == self.target:  # found the target!
         self.logger.info("Target found!")
         self.respond('y')
@@ -312,8 +313,18 @@ class PatternMatcher(object):
 
 
 if __name__ == "__main__":
-  #VisualSearchAgent().run()
-  # TODO: Make these command-line args
-  ZelinksyFinder(target='Q', distractors=['O'], numStimuli=5).run()  # look for 'Q', single type of distractor: 'O'; total expected stimuli = 5 [default]
-  #ZelinksyFinder(target='Q', distractors=None).run()  # look for 'O', everything else is a distractor
-  #ZelinksyFinder(target='O', distractors=['Q'], numStimuli=17).run()  # look for 'O', single distractor 'Q'; total expected stimuli = 17
+  argParser = argparse.ArgumentParser(add_help=False)
+  argParser.add_argument('--zelinsky', action='store_true', help="run a Zelinsky search agent")
+  argParser.add_argument('--target', default='Q', choices=('Q', 'O'), help='target symbol (Q or O)')
+  argParser.add_argument('--size', dest='num_stimuli', type=int, default=5, help='display size (no. of stimuli) to expect')
+  context = Context.createInstance(description="Zelinsky search agent", parent_argparsers=[argParser])
+  if context.options.zelinsky:
+    ZelinksyFinder(target=context.options.target, distractors=('O' if context.options.target == 'Q' else 'Q'), numStimuli=context.options.num_stimuli).run()
+  else:
+    VisualSearchAgent().run()
+  
+  # Some example invocations
+  #ZelinksyFinder(target='Q', distractors=['O'], numStimuli= 5).run()  # target: 'Q', distractor: 'O'; size:  5 [default]
+  #ZelinksyFinder(target='Q', distractors=['O'], numStimuli=17).run()  # target: 'Q', distractor: 'O'; size: 17
+  #ZelinksyFinder(target='O', distractors=['Q'], numStimuli= 5).run()  # target: 'O', distractor: 'Q'; size:  5
+  #ZelinksyFinder(target='O', distractors=['Q'], numStimuli=17).run()  # target: 'O', distractor: 'Q'; size: 17
