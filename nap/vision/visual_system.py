@@ -354,11 +354,11 @@ class VisualSystem(object):
       imageRB = self.images['Bipolar']['L'] - self.images['Bipolar']['S']
       imageBY = self.images['Bipolar']['S'] - (self.images['Bipolar']['L'] + self.images['Bipolar']['M']) / 2
       self.images['Ganglion']['RG'] = np.maximum(self.images['Ganglion']['RG'], np.clip(cv2.filter2D(imageRG, -1, k), 0.0, 1.0))
-      self.images['Ganglion']['GR'] = np.maximum(self.images['Ganglion']['GR'], np.clip(cv2.filter2D(-imageRG, -1, k), 0.0, 1.0)) * 1.5  # TODO: formalize this fixed relative weighting scheme
+      self.images['Ganglion']['GR'] = np.maximum(self.images['Ganglion']['GR'], np.clip(cv2.filter2D(-imageRG, -1, k) * 1.6, 0.0, 1.0))  # TODO: formalize this fixed relative weighting scheme to counter unequal color representation
       self.images['Ganglion']['RB'] = np.maximum(self.images['Ganglion']['RB'], np.clip(cv2.filter2D(imageRB, -1, k), 0.0, 1.0))
       self.images['Ganglion']['BR'] = np.maximum(self.images['Ganglion']['BR'], np.clip(cv2.filter2D(-imageRB, -1, k), 0.0, 1.0))
       self.images['Ganglion']['BY'] = np.maximum(self.images['Ganglion']['BY'], np.clip(cv2.filter2D(imageBY, -1, k), 0.0, 1.0))
-      self.images['Ganglion']['YB'] = np.maximum(self.images['Ganglion']['YB'], np.clip(cv2.filter2D(-imageBY, -1, k), 0.0, 1.0))
+      self.images['Ganglion']['YB'] = np.maximum(self.images['Ganglion']['YB'], np.clip(cv2.filter2D(-imageBY, -1, k) * 1.6, 0.0, 1.0))  # TODO: also here
     
     # * Compute combined (salience) image; TODO incorporate attention weighting (spatial, as well as by visual feature)
     # ** Method 1: Max of all Ganglion cell images
@@ -779,10 +779,8 @@ class VisualSystem(object):
 class VisionManager(Projector):
   """A version of Projector that defaults to using a VisualSystem as target."""
   
-  screen_background = np.uint8([0, 0, 0])  #Projector.default_screen_background
-  
   def __init__(self, target=None, *args, **kwargs):
-    Projector.__init__(self, target if target is not None else VisualSystem(), screen_background=self.screen_background, *args, **kwargs)
+    Projector.__init__(self, target if target is not None else VisualSystem(), *args, **kwargs)
     self.visualSystem = self.target  # synonym - Projector uses the generic term target
     self.ocularMotionSystem = EmulatedOcularMotionSystem(self, timeNow=self.context.timeNow)
     self.visualSystem.ocularMotionSystem = self.ocularMotionSystem
@@ -805,6 +803,7 @@ class FeatureManager(VisionManager):
   max_feature_sd = 0.005  # max. s.d. (units: Volts) to tolerate in judging a signal as stable
   
   def __init__(self, *args, **kwargs):
+    kwargs['screen_background'] = kwargs.get('screen_background', np.uint8([0, 0, 0]))
     VisionManager.__init__(self, *args, **kwargs)
     self.state = self.State.NONE
     self.lastTransitionTime = -1.0

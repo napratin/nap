@@ -26,6 +26,7 @@ class COILManager(FeatureManager):
     self.visualSystem.finst_inhibition_enabled = False  # to prevent FINST-based inhibition
     self.visualSystem.max_hold_duration = 24.0 * 3600.0  # effectively prevent automatic release from hold
     self.visualSystem.setBuffer('intent', 'reset')
+    self.visualSystem.setBuffer('intent', 'hold')
     # TODO: Use a better feature encoding scheme allowing the visual system to scan different parts of the image
   
   def process(self, imageIn, timeNow):
