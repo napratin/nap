@@ -23,7 +23,9 @@ class COILManager(FeatureManager):
     
     # Configure visual system to use equal feature weights and hold gaze at a fixed location (default center)
     self.visualSystem.setBuffer('weights', { 'rest': 1.0 })
-    self.visualSystem.setBuffer('intent', 'hold')
+    self.visualSystem.finst_inhibition_enabled = False  # to prevent FINST-based inhibition
+    self.visualSystem.max_hold_duration = 24.0 * 3600.0  # effectively prevent automatic release from hold
+    self.visualSystem.setBuffer('intent', 'reset')
     # TODO: Use a better feature encoding scheme allowing the visual system to scan different parts of the image
   
   def process(self, imageIn, timeNow):
@@ -32,13 +34,15 @@ class COILManager(FeatureManager):
     if self.state == self.State.STABLE:
       self.logger.info("[Final] Mean: {}".format(self.featureVectorMean))
       self.logger.info("[Final] S.D.: {}".format(self.featureVectorSD))
+      self.logger.info("[Final] Feature matrix:\n  {}".format("\n  ".join("{}: {}".format(label, self.featureMatrixMean[i]) for i, label in enumerate(self.visualSystem.featureLabels))))
+      
       return False, imageOut  # Return False when done
     
     return keepRunning, imageOut
 
 
 class COILAgent(object):
-  image_size = (200, 200)  # optimal size can be vary depending on foveal distribution, image size and whether eye movements are enabled or not
+  image_size = (256, 256)  # optimal size can be vary depending on foveal distribution, image size and whether eye movements are enabled or not
   input_file_prefix = "obj"
   input_file_sep = "__"
   input_file_ext = "png"
@@ -75,12 +79,13 @@ class COILAgent(object):
     
     # * Create visual system and manager
     self.context.update()  # get fresh time
-    self.visSys = VisualSystem(imageSize=self.image_size, timeNow=self.context.timeNow, showMonitor=False)
+    self.visSys = VisualSystem(imageSize=self.image_size, timeNow=self.context.timeNow)
     self.visMan = COILManager(self.visSys)
     
   def run(self):
     if self.outFile is not None:
-      self.outFile.write("{}\t{}\t{}\t{}\n".format('obj', 'view', '\t'.join(["{}_mean".format(label) for label in self.visSys.featureLabels]), '\t'.join(["{}_sd".format(label) for label in self.visSys.featureLabels])))
+      #self.outFile.write("{}\t{}\t{}\t{}\n".format('obj', 'view', '\t'.join(["{}_mean".format(label) for label in self.visSys.featureLabels]), '\t'.join(["{}_sd".format(label) for label in self.visSys.featureLabels])))  # vector mean and SD
+      self.outFile.write("{}\t{}\t{}\n".format('obj', 'view', '\t'.join(["{}_{}".format(label, i) for label in self.visSys.featureLabels for i in xrange(self.visSys.num_feature_neurons)])))  # matrix mean
     
     if self.context.isDir:  # input source is a directory
       # * Run visual input using manager, looping over all specified object images
@@ -100,11 +105,10 @@ class COILAgent(object):
           print "Running..."
           run(self.visMan, resetContextTime=False)  # use the same manager so that visual system is only created once
           if self.outFile is not None:
-            self.outFile.write("{}\t{}\t{}\t{}\n".format(obj, view, '\t'.join(str(feat_mean) for feat_mean in self.visMan.featureVectorMean), '\t'.join(str(feat_sd) for feat_sd in self.visMan.featureVectorSD)))
+            #self.outFile.write("{}\t{}\t{}\t{}\n".format(obj, view, '\t'.join(str(feat_mean) for feat_mean in self.visMan.featureVectorMean), '\t'.join(str(feat_sd) for feat_sd in self.visMan.featureVectorSD)))  # vector mean and SD
+            self.outFile.write("{}\t{}\t{}\n".format(obj, view, '\t'.join(str(feat) for feat in self.visMan.featureMatrixMean.flat)))  # matrix mean
     else:
       run(self.visMan, resetContextTime=False)  # run on the sole input source (image or video)
-      #if self.outFile is not None:
-      #  self.outFile.write("{}\t{}\t{}\t{}\n".format(obj, view, )) # TODO dunno obj & view for single image, what to do?!
     
     if self.outFile is not None:
       self.outFile.close()

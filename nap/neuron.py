@@ -490,7 +490,8 @@ class NeuronMonitor(object):
     axhline_resting_potential=Neuron.resting_potential.mu,
     axhline_threshold_potential=threshold_potential,
     axhline_action_potential_peak=action_potential_peak,
-    axhline_action_potential_trough=action_potential_trough.mu)
+    axhline_action_potential_trough=action_potential_trough.mu,
+    show_legend=True)
   
   # Axes parameters passed to Figure.gca(), also overwritten by kwargs
   _axes_params=dict(
@@ -554,7 +555,8 @@ class NeuronMonitor(object):
       # TODO Create different plots based on analog flag
       channel['plot'] = self.ax.plot(self.times, channel['samples'], label=label, color=(channel['color'] if channel['color'] is not None else cm.jet(1. * i / len(self.channels))), **self.plot_params)[0]  # assuming first (and only) returned plot is the one we want
       i += 1
-    self.ax.legend(loc='upper right')
+    if self.show_legend:
+      self.ax.legend(loc='upper right')
     self.fig.show()
     
     # Begin update loop

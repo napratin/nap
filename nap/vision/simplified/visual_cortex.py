@@ -1,6 +1,6 @@
 """Functional models of neurons from the visual cortex."""
 
-from math import exp, sqrt
+from math import exp, sqrt, hypot
 import numpy as np
 
 from ...neuron import Neuron, threshold_potential, action_potential_peak, action_potential_trough, refractory_period, Uniform
@@ -12,9 +12,12 @@ class SalienceNeuron(Neuron):
   _str_attrs = ['id', 'pathway', 'pixel', 'response', 'potential', 'pixelValue']
   
   # Receptive field parameters
-  rf_radius_range = Uniform(low=0.025, high=0.2)  # fraction of visual field size
+  #rf_radius_range = Uniform(low=0.025, high=0.2)  # fraction of visual field size [uniform]
+  rf_radius_factor = Uniform(low=0.5, high=1.0)  # factor to multiply distance from center with, to get RF radius [radial]
+  rf_radius_min = 5.0  # absolute min
+  rf_radius_max_factor = 0.5  # relative to half-diagonal of retina (i.e. an approximation of retinal radius)
   rf_center_radius_range = Uniform(low=(1.0 / sqrt(2.0)) * 0.9, high=(1.0 / sqrt(2.0)) * 1.1)  # fraction of receptive field radius (NOTE in order to ensure equal center and surround area, center radius must be about 1/sqrt(2) of outer radius; otherwise use mean when computing center-surround difference)
-  #rf_radius_range = Uniform(low=0.05, high=0.5)  # fraction of visual field size, largish, wide range
+  #rf_radius_range = Uniform(low=0.05, high=0.5)  # fraction of visual field size, largish, wide range [uniform]
   #rf_center_radius_range = Uniform(low=0.1, high=0.5)  # fraction of receptive field radius, smallish, wide range - not guaranteed to equalize center-surround areas
   
   # TODO Define types of salience neurons (feature-specific, and feature-agnostic) as tuple of feature neurons/maps to connect to
@@ -23,7 +26,7 @@ class SalienceNeuron(Neuron):
   R = 300.0e06  # Ohms; membrane resistance (~30-700Mohm)
   C = 3.0e-09  # Farads; membrane capacitance (~2-3nF)
   tau = R * C  # seconds; time constant (~100-1000ms)
-  max_current = 100.0e-12  # Amperes; determines how input response affects potential
+  max_current = 200.0e-12  # Amperes; determines how input response affects potential
   
   # Miscellaneous parameters
   potential_scale = 255 / abs(action_potential_peak - Neuron.resting_potential.mu)  # factor used to convert cell potential to image pixel value
@@ -40,7 +43,13 @@ class SalienceNeuron(Neuron):
     self.pixelValue = 0
     
     # Receptive field parameters
-    self.rfRadius = np.random.uniform(self.rf_radius_range.low, self.rf_radius_range.high) * self.system.imageSize[0]
+    #self.rfRadius = np.random.uniform(self.rf_radius_range.low, self.rf_radius_range.high) * self.system.imageSize[0]
+    self.rfRadius = np.random.uniform(self.rf_radius_factor.low, self.rf_radius_factor.high) * \
+        hypot(self.location[0] - self.system.imageCenter[0], self.location[1] - self.system.imageCenter[1])
+    if self.rfRadius < self.rf_radius_min:
+      self.rfRadius = self.rf_radius_min
+    elif self.rfRadius > (self.rf_radius_max_factor * hypot(self.system.imageCenter[0], self.system.imageCenter[1])):
+      self.rfRadius = self.rf_radius_max_factor * hypot(self.system.imageCenter[0], self.system.imageCenter[1])
     self.rfCenterRadius = np.random.uniform(self.rf_center_radius_range.low, self.rf_center_radius_range.high) * self.rfRadius
     
     # Define receptive field as two slice/index expressions, one for the whole and one for center
@@ -53,6 +62,12 @@ class SalienceNeuron(Neuron):
     self.rfCenterSlice = np.index_exp[
       max(self.pixel[1] - self.rfCenterRadius, 0):min(self.pixel[1] + self.rfCenterRadius, self.system.imageSize[1]),
       max(self.pixel[0] - self.rfCenterRadius, 0):min(self.pixel[0] + self.rfCenterRadius, self.system.imageSize[0])]
+  
+  def synapseWith(self, neuron, strength=None, gatekeeper=None):
+    Neuron.synapseWith(self, neuron, strength, gatekeeper)
+    # Pass along self reference for receptive field information to selection neuron
+    if hasattr(neuron, 'inputNeurons'):
+      neuron.inputNeurons.append(self)
   
   def updatePotential(self):
     # Gather response from feature map (TODO choose feature map based on type)
@@ -93,6 +108,9 @@ class SelectionNeuron(Neuron):
   C = 3.0e-09  # Farads; membrane capacitance (~2-3nF)
   tau = R * C  # seconds; time constant (~100-1000ms)
   
+  # Receptive field parameters
+  rf_radius_factor_default = 0.25
+  
   # Miscellaneous parameters
   potential_scale = 255 / abs(action_potential_peak - Neuron.resting_potential.mu)  # factor used to convert cell potential to image pixel value
   
@@ -103,6 +121,8 @@ class SelectionNeuron(Neuron):
     self.pixel = pixel if pixel is not None else np.int_(location[:2])
     #self.expDecayFactor = 0.0
     self.pixelValue = 0
+    self.inputNeurons = []  # will be populated when synapses are made by salience neurons
+    self.rfRadius = self.rf_radius_factor_default * hypot(self.location[0] - self.system.imageCenter[0], self.location[1] - self.system.imageCenter[1])
   
   def updatePotential(self):
     # Decay potential

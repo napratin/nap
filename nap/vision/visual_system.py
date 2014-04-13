@@ -15,7 +15,7 @@ from lumos.input import Projector, run
 from lumos import rpc
 
 from ..util.buffer import InputBuffer, OutputBuffer, BidirectionalBuffer, BufferAccessError
-from ..neuron import Neuron, Population, Projection, neuron_inhibition_period, Uniform, MultivariateUniform, NeuronMonitor, plotPopulations
+from ..neuron import Neuron, Population, Projection, neuron_inhibition_period, Uniform, MultivariateUniform, MultivariateNormal, NeuronMonitor, plotPopulations
 from .photoreceptor import Rod, Cone
 from .simplified.visual_cortex import SalienceNeuron, SelectionNeuron, FeatureNeuron
 from ..motion.ocular import EmulatedOcularMotionSystem
@@ -98,9 +98,11 @@ class VisualSystem(object):
   num_ganglion_cells = 1000
   num_salience_neurons = 400
   num_selection_neurons = 100
+  num_feature_neurons = 2  # no. of feature neurons per pathway, more implies finer feature resolution
   
   num_finsts = 5  # no. of visual FINSTs
   finst_decay_enabled = False  # if enabled, FINST activations will be updated and those with low activation will be purged
+  finst_inhibition_enabled = True  # if active FINST locations are inhibited
   
   max_free_duration = 2.0  # artificial bound to prevent no results in case of very low salience inputs
   min_saccade_duration = 0.05  # human: 0.02s (20ms)
@@ -118,7 +120,7 @@ class VisualSystem(object):
   
   central_radius_ratio = 0.5  # radius to mark central region where visual acuity is modest and then falls off with eccentricity
   
-  def __init__(self, imageSize=default_image_size, foveaSize=default_fovea_size, timeNow=0.0, showMonitor=True, ocularMotionSystem=None):
+  def __init__(self, imageSize=default_image_size, foveaSize=default_fovea_size, timeNow=0.0, showMonitor=None, ocularMotionSystem=None):
     # * Get context and logger
     self.context = Context.getInstance()
     self.logger = logging.getLogger(self.__class__.__name__)
@@ -252,10 +254,16 @@ class VisualSystem(object):
       self.imageSalienceOut = np.zeros(self.imageShapeC1, dtype=self.imageTypeInt)  # salience neuron outputs
       self.imageSelectionOut = np.zeros(self.imageShapeC1, dtype=self.imageTypeInt)  # selection neuron outputs
       
+      if showMonitor is None:
+        showMonitor = self.context.options.gui and self.context.options.debug
       if showMonitor:
-        self.neuronPotentialMonitor = NeuronMonitor()
+        self.neuronPotentialMonitor = NeuronMonitor(show_legend=False)
         for pathwayLabel, featurePathway in self.featurePathways.iteritems():
-          self.neuronPotentialMonitor.addChannel(label=pathwayLabel, obj=featurePathway.output.neurons[0], color=self.featurePlotColors[pathwayLabel])  # very hard-coded way to access single output neuron!
+          # Monitor single feature neuron
+          #self.neuronPotentialMonitor.addChannel(label=pathwayLabel, obj=featurePathway.output.neurons[0], color=self.featurePlotColors[pathwayLabel])  # very hard-coded way to access single output neuron!
+          # Monitor all feature neurons
+          for idx, outputNeuron in enumerate(featurePathway.output.neurons):
+            self.neuronPotentialMonitor.addChannel(label="{}_{}".format(pathwayLabel, idx), obj=outputNeuron, color=self.featurePlotColors[pathwayLabel])
         self.neuronPotentialMonitor.start()
     
     # * Buffers - mainly for communication with high-level (cognitive) architectures, other modules
@@ -312,7 +320,7 @@ class VisualSystem(object):
     # NOTE Blurring is a step that is effectively achieved in biology by horizontal cells
     imageRodBlurred = cv2.blur(self.images['Rod'], self.bipolarBlurSize)
     self.images['Bipolar']['ON'] = np.clip(self.images['Rod'] - 0.75 * imageRodBlurred, 0.0, 1.0)
-    self.images['Bipolar']['OFF'] = np.clip((1.0 - self.images['Rod']) - 0.75 * (1.0 - imageRodBlurred), 0.0, 1.0)  # same as (1 - ON response)? (nope)
+    self.images['Bipolar']['OFF'] = np.clip((1.0 - self.images['Rod']) - 0.95 * (1.0 - imageRodBlurred), 0.0, 1.0)  # same as (1 - ON response)? (nope)
     
     # ** Bipolar responses: Cones
     # TODO Add multiscale Cone Bipolars to prevent unwanted response to diffuse illumination
@@ -346,7 +354,7 @@ class VisualSystem(object):
       imageRB = self.images['Bipolar']['L'] - self.images['Bipolar']['S']
       imageBY = self.images['Bipolar']['S'] - (self.images['Bipolar']['L'] + self.images['Bipolar']['M']) / 2
       self.images['Ganglion']['RG'] = np.maximum(self.images['Ganglion']['RG'], np.clip(cv2.filter2D(imageRG, -1, k), 0.0, 1.0))
-      self.images['Ganglion']['GR'] = np.maximum(self.images['Ganglion']['GR'], np.clip(cv2.filter2D(-imageRG, -1, k), 0.0, 1.0))
+      self.images['Ganglion']['GR'] = np.maximum(self.images['Ganglion']['GR'], np.clip(cv2.filter2D(-imageRG, -1, k), 0.0, 1.0)) * 1.5  # TODO: formalize this fixed relative weighting scheme
       self.images['Ganglion']['RB'] = np.maximum(self.images['Ganglion']['RB'], np.clip(cv2.filter2D(imageRB, -1, k), 0.0, 1.0))
       self.images['Ganglion']['BR'] = np.maximum(self.images['Ganglion']['BR'], np.clip(cv2.filter2D(-imageRB, -1, k), 0.0, 1.0))
       self.images['Ganglion']['BY'] = np.maximum(self.images['Ganglion']['BY'], np.clip(cv2.filter2D(imageBY, -1, k), 0.0, 1.0))
@@ -370,7 +378,7 @@ class VisualSystem(object):
         self.finsts.popleft()
     
     # * Apply inhibition based on FINSTs
-    if self.finsts:
+    if self.finst_inhibition_enabled and self.finsts:
       self.logger.debug("Current FINSTs: {}".format(", ".join(str(finst) for finst in self.finsts)))
       for finst in self.finsts:
         self.inhibitMapAtFinst(self.images['Salience'], finst)
@@ -436,11 +444,11 @@ class VisualSystem(object):
             cv2.circle(self.imageSalienceOut, (salienceNeuron.pixel[0], salienceNeuron.pixel[1]), np.int_(salienceNeuron.rfRadius), 128)
             cv2.circle(self.imageSalienceOut, (salienceNeuron.pixel[0], salienceNeuron.pixel[1]), np.int_(salienceNeuron.rfCenterRadius), salienceNeuron.pixelValue, cv.CV_FILLED)
           
-          # *** Selection neurons (TODO gather representative receptive field from source connections and cache it for use here, instead of using constant size?)
+          # *** Selection neurons
           if featurePathway.selectedNeuron is not None and (timeNow - featurePathway.selectedTime) < 3.0:
             #self.imageSelectionOut.fill(0.0)
-            cv2.circle(self.imageSalienceOut, (featurePathway.selectedNeuron.pixel[0], featurePathway.selectedNeuron.pixel[1]), self.imageSize[0] / 20, int(255 * exp(featurePathway.selectedTime - timeNow)), 2)  # draw selected neuron with a shade that fades with time (on salience output image)
-            #cv2.circle(self.imageSelectionOut, (featurePathway.selectedNeuron.pixel[0], featurePathway.selectedNeuron.pixel[1]), self.imageSize[0] / 20, int(255 * exp(featurePathway.selectedTime - timeNow)), cv.CV_FILLED)  # draw selected neuron with a shade that fades with time
+            cv2.circle(self.imageSalienceOut, (featurePathway.selectedNeuron.pixel[0], featurePathway.selectedNeuron.pixel[1]), featurePathway.selectedNeuron.rfRadius, int(255 * exp(featurePathway.selectedTime - timeNow)), 2)  # draw selected neuron with a shade that fades with time (on salience output image)
+            #cv2.circle(self.imageSelectionOut, (featurePathway.selectedNeuron.pixel[0], featurePathway.selectedNeuron.pixel[1]), featurePathway.selectedNeuron.rfRadius, int(255 * exp(featurePathway.selectedTime - timeNow)), cv.CV_FILLED)  # draw selected neuron with a shade that fades with time
           
           cv2.imshow("{} Salience".format(pathwayLabel), self.imageSalienceOut)
           #cv2.imshow("{} Selection".format(pathwayLabel), self.imageSelectionOut)
@@ -469,6 +477,7 @@ class VisualSystem(object):
         self.logger.info("Fixated at: {}, fixation slice: {}".format(self.fixationLoc, self.fixationSlice))
       # Update feature vector representing current state of neurons
       self.logger.debug("[{:.2f}] Features: {}".format(self.timeNow, self.featureVector))  # [verbose]
+      #self.logger.debug("[{:.2f}] Feature matrix:\n  {}".format(self.timeNow, "\n  ".join("{}: {}".format(label, self.featureMatrix[i]) for i, label in enumerate(self.featureLabels))))  # [very verbose!]
       self.buffers['features'].set_out(dict(izip(self.featureLabels, self.featureVector)))  # TODO: find a better way than zipping every iteration (named tuple or something?)
       if self.timeNow > (self.lastTransitionTime + self.min_fixation_duration):
         # TODO: Update match buffer based on feature values and weights
@@ -587,8 +596,11 @@ class VisualSystem(object):
         pathway.p = rest
   
   def updateFeatureVector(self):
-    self.featureVector = np.float32([pathway.output.neurons[0].potential for pathway in self.featurePathways.itervalues()])
     # TODO: Also compute mean and variance over a moving window here? (or should that be an agent/manager-level function?)
+    # Feature vector picks a single value from each channel
+    self.featureVector = np.float32([pathway.output.neurons[0].potential for pathway in self.featurePathways.itervalues()])
+    # Feature matrix picks all neuron values from each channel
+    self.featureMatrix = np.float32([[neuron.potential for neuron in pathway.output.neurons] for pathway in self.featurePathways.itervalues()])
   
   def toCenterRelative(self, coords):
     return (coords[0] - self.imageCenter[0], coords[1] - self.imageCenter[1])  # convert to center-relative coordinates
@@ -628,30 +640,57 @@ class VisualSystem(object):
       # ** Create layers
       # *** Salience neurons (TODO introduce magno and parvo types; expose layer parameters such as Z-axis position)
       salienceLayerBounds = np.float32([[0.0, 0.0, 0.0], [self.imageSize[0] - 1, self.imageSize[1] - 1, 0.0]])
-      #salienceNeuronDistribution = MultivariateNormal(mu=self.center, cov=(np.float32([self.center[0] ** 2, self.center[0] ** 2, 1.0]) * np.identity(3, dtype=np.float32)))
-      salienceNeuronDistribution = MultivariateUniform(lows=[0.0, 0.0, 0.0], highs=[self.imageSize[0], self.imageSize[1], 0.0])
+      salienceNeuronDistribution = MultivariateNormal(mu=self.center, cov=(np.float32([self.center[0] ** 1.25, self.center[1] ** 1.25, 1.0]) * np.identity(3, dtype=np.float32)))
+      #salienceNeuronDistribution = MultivariateUniform(lows=[0.0, 0.0, 0.0], highs=[self.imageSize[0], self.imageSize[1], 0.0])
       salienceNeurons = Population(numNeurons=self.num_salience_neurons, timeNow=self.timeNow, neuronTypes=[SalienceNeuron], bounds=salienceLayerBounds, distribution=salienceNeuronDistribution, system=self, pathway=pathwayLabel, imageSet=self.images['Ganglion'])
       # TODO self.addPopulation(salienceNeurons)?
       
       # *** Selection neurons
       selectionLayerBounds = np.float32([[0.0, 0.0, 50.0], [self.imageSize[0] - 1, self.imageSize[1] - 1, 50.0]])
-      selectionNeuronDistribution = MultivariateUniform(lows=[0.0, 0.0, 50.0], highs=[self.imageSize[0], self.imageSize[1], 50.0])
+      selectionNeuronDistribution = MultivariateNormal(mu=self.center + np.float32([0.0, 0.0, 50.0]), cov=(np.float32([self.center[0] ** 1.25, self.center[1] ** 1.25, 1.0]) * np.identity(3, dtype=np.float32)))
+      #selectionNeuronDistribution = MultivariateUniform(lows=[0.0, 0.0, 50.0], highs=[self.imageSize[0], self.imageSize[1], 50.0])
       selectionNeurons = Population(numNeurons=self.num_selection_neurons, timeNow=self.timeNow, neuronTypes=[SelectionNeuron], bounds=selectionLayerBounds, distribution=selectionNeuronDistribution, system=self, pathway=pathwayLabel)
       # TODO self.addPopulation(selectionNeurons)?
       
       # *** Feature neurons (usually a single neuron for most non spatially-sensitive features)
       featureLayerBounds = np.float32([[0.0, 0.0, 100.0], [self.imageSize[0] - 1, self.imageSize[1] - 1, 100.0]])
-      featureNeurons = Population(numNeurons=1, timeNow=self.timeNow, neuronTypes=[FeatureNeuron], bounds=featureLayerBounds, neuronLocations=np.float32([[self.imageCenter[0], self.imageCenter[1], 100.0]]), system=self, pathway=pathwayLabel)  # effectively a single point in space is what we need for location
+      featureNeuronDistribution = MultivariateNormal(mu=self.center + np.float32([0.0, 0.0, 100.0]), cov=(np.float32([self.center[0] / 10, self.center[1] / 10, 1.0]) * np.identity(3, dtype=np.float32)))  # positioning doesn't matter much
+      featureNeurons = Population(numNeurons=self.num_feature_neurons, timeNow=self.timeNow, neuronTypes=[FeatureNeuron], bounds=featureLayerBounds, distribution=featureNeuronDistribution, system=self, pathway=pathwayLabel)
       # TODO Set feature neuron plotColor to something more representative of the pathway
       
       # ** Connect neuron layers
       # *** Salience neurons to selection neurons (TODO use createProjection() once Projection is implemented, and register using self.addProjection)
       salienceNeurons.connectWith(selectionNeurons, maxConnectionsPerNeuron=5)
+      # For selection neurons, finalize their receptive field radii based on connected neurons (average distance to extrema)
+      minRFRadius = None
+      maxRFRadius = None
+      for selectionNeuron in selectionNeurons.neurons:
+        xlim = [selectionNeuron.location[0], selectionNeuron.location[0]]  # min, max
+        ylim = [selectionNeuron.location[1], selectionNeuron.location[1]]  # min, max
+        for inputNeuron in selectionNeuron.inputNeurons:
+          xlim[0] = min(xlim[0], inputNeuron.location[0] - inputNeuron.rfRadius)
+          xlim[1] = max(xlim[1], inputNeuron.location[0] + inputNeuron.rfRadius)
+          ylim[0] = min(ylim[0], inputNeuron.location[1] - inputNeuron.rfRadius)
+          ylim[1] = max(ylim[1], inputNeuron.location[1] + inputNeuron.rfRadius)
+        selectionNeuron.rfRadius = int((hypot(xlim[0] - selectionNeuron.location[0], ylim[0] - selectionNeuron.location[1]) + \
+                                        hypot(xlim[1] - selectionNeuron.location[0], ylim[1] - selectionNeuron.location[1])) / 2)
+        # NOTE: We don't need much precision for this estimated RF radius - it is mainly used to categorize these neurons into broad groups, and for display
+        if minRFRadius is None or selectionNeuron.rfRadius < minRFRadius:
+          minRFRadius = selectionNeuron.rfRadius
+        if maxRFRadius is None or selectionNeuron.rfRadius > maxRFRadius:
+          maxRFRadius = selectionNeuron.rfRadius
       
-      # *** Selection neurons to feature neurons (all-to-all)
+      # *** Selection neurons to feature neurons (all-to-all, filtered by receptive field size)
+      featureRFRadiusStep = float(maxRFRadius - minRFRadius) / self.num_feature_neurons  # size of each uniform RF radius division to categorize input neurons in the featureNeurons layer
       for source in selectionNeurons.neurons:
-        for target in featureNeurons.neurons:
-          source.synapseWith(target)
+        # All-to-all
+        #for target in featureNeurons.neurons:
+        #  source.synapseWith(target)
+        # Filtered by receptive field size
+        idx = int((source.rfRadius - minRFRadius) / featureRFRadiusStep)
+        if idx >= self.num_feature_neurons:
+          idx = self.num_feature_neurons - 1  # ensure idx is range
+        source.synapseWith(featureNeurons.neurons[idx])  # connect with appropriate feature neuron
       selectionNeurons.isConnected = True  # NOTE need to explicitly do this since we're not using Population.connectWith()
       
       # *** Selection neurons to themselves (lateral inhibition; TODO make this a re-entrant inhibitory Projection with allow_self_connections=False?)
@@ -740,8 +779,10 @@ class VisualSystem(object):
 class VisionManager(Projector):
   """A version of Projector that defaults to using a VisualSystem as target."""
   
+  screen_background = np.uint8([0, 0, 0])  #Projector.default_screen_background
+  
   def __init__(self, target=None, *args, **kwargs):
-    Projector.__init__(self, target if target is not None else VisualSystem(), *args, **kwargs)
+    Projector.__init__(self, target if target is not None else VisualSystem(), screen_background=self.screen_background, *args, **kwargs)
     self.visualSystem = self.target  # synonym - Projector uses the generic term target
     self.ocularMotionSystem = EmulatedOcularMotionSystem(self, timeNow=self.context.timeNow)
     self.visualSystem.ocularMotionSystem = self.ocularMotionSystem
@@ -776,6 +817,8 @@ class FeatureManager(VisionManager):
     self.featureVectorCount = 0  # no. of feature vector samples collected (same as index, sans modulo)
     self.featureVectorMean = np.zeros(self.numFeatures, dtype=np.float32)  # column mean of values in buffer
     self.featureVectorSD = np.zeros(self.numFeatures, dtype=np.float32)  # standard deviation of values in buffer
+    self.featureMatrixBuffer = np.zeros((self.feature_buffer_size, self.numFeatures, self.visualSystem.num_feature_neurons), dtype=np.float32)  # follows featureVectorBuffer
+    self.featureMatrixMean = np.zeros((self.numFeatures, self.visualSystem.num_feature_neurons), dtype=np.float32)  # follows featureVectorMean
     self.logger.info("[{:.2f}] Features: {}".format(timeNow, self.visualSystem.featureLabels))
     self.transition(self.State.INCOMPLETE, timeNow)
     self.logger.debug("Initialized")
@@ -783,11 +826,14 @@ class FeatureManager(VisionManager):
   def process(self, imageIn, timeNow):
     keepRunning, imageOut = VisionManager.process(self, imageIn, timeNow)
     
-    # Compute featureVector mean and variance over a moving window
+    # Compute featureVector mean and variance over a moving window (also featureMatrix mean)
     self.featureVectorBuffer[self.featureVectorIndex, :] = self.visualSystem.featureVector
+    self.featureMatrixBuffer[self.featureVectorIndex, :] = self.visualSystem.featureMatrix
     self.featureVectorCount += 1
     self.featureVectorIndex = self.featureVectorCount % self.feature_buffer_size
     np.mean(self.featureVectorBuffer, axis=0, dtype=np.float32, out=self.featureVectorMean)  # always update mean, in case someone needs it
+    # TODO: debug here
+    np.mean(self.featureMatrixBuffer, axis=0, dtype=np.float32, out=self.featureMatrixMean)
     
     # Change state according to feature vector values (and visual system's state)
     deltaTime = timeNow - self.lastTransitionTime
@@ -802,13 +848,14 @@ class FeatureManager(VisionManager):
         np.std(self.featureVectorBuffer, axis=0, dtype=np.float32, out=self.featureVectorSD)
         self.logger.debug("[{:.2f}] Mean: {}".format(timeNow, self.featureVectorMean))  # [verbose]
         self.logger.debug("[{:.2f}] S.D.: {}".format(timeNow, self.featureVectorSD))  # [verbose]
+        self.logger.debug("[{:.2f}] Feature matrix:\n  {}".format(timeNow, "\n  ".join("{}: {}".format(label, self.featureMatrixMean[i]) for i, label in enumerate(self.visualSystem.featureLabels))))
         if self.state == self.State.UNSTABLE and deltaTime > self.min_duration_unstable and \
             (np.max(self.featureVectorSD) <= self.max_feature_sd or deltaTime > self.max_duration_unstable):  # TODO use a time-scaled low-pass filtered criteria
           self.transition(self.State.STABLE, timeNow)
         elif self.state == self.State.STABLE and deltaTime > self.min_duration_stable and \
             (np.max(self.featureVectorSD) > self.max_feature_sd or deltaTime > self.max_duration_stable):
             self.transition(self.State.UNSTABLE, timeNow)
-            self.visualSystem.setBuffer('intent', 'find')  # let system return to FIXATE-SACCADE mode
+            self.visualSystem.setBuffer('intent', 'find')  # let system return to FIXATE-SACCADE mode (without inhibition)
       else:  # something made visual system lose focus, including us releasing the system
         self.transition(self.State.INCOMPLETE, timeNow)
     
@@ -826,6 +873,10 @@ class FeatureManager(VisionManager):
   @rpc.enable
   def getFeatureVector(self):
     return self.featureVectorMean.tolist()
+  
+  @rpc.enable
+  def getFeatureMatrix(self):
+    return self.featureMatrixMean.tolist()  # will be a nested list, not flat
 
 
 def main(managerType=VisionManager):
