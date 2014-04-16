@@ -1,0 +1,11 @@
+Zelinsky visual search task
+
+4/9/2014
+
+Enhancements
+- Apply a Gaussian weight map with radially decreasing activation instead of the current blurred version of a constant circle.
+- For a salient location within the current foveal region, no saccade is necessary; this would be a covert form of attention.
+- For a salient location outside the foveal region, perform a normal saccade; this would be overt attention shift.
+- FINSTs should weigh down salience using a radially decreasing map, instead of zeroing it out completely; this allows for return of attention with some probability.
+- Creation of a new FINST should first check for nearby existing FINSTs: if considerable overlap with one exists (the nearest one), this existing FINST should be extended to cover the newly discovered region if coarse features are similar (some additional region maybe inhibted as a side-effect, but this is something that is observed in humans as well - a bunch of distractors close to the target sometimes make it more difficult to identify).
+- Once this dynamic FINST behavior is implemented, no. of FINSTs can be reduced and fixed to 4-5, and activation decay can be re-introduced.
