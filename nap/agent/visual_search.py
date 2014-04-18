@@ -99,7 +99,7 @@ class ZelinksyFinder(VisualSearchAgent):
   pattern_files[default_distractor] = "res/data/visual-search/zelinsky-patterns/o-pattern.png"
   
   # TODO: These need to be updated according to fovea and pattern size
-  max_match_sqdiff = 0.02  # max value of SQDIFF matching to be counted as a valid match
+  max_match_sqdiff = 0.01  # max value of SQDIFF matching to be counted as a valid match
   min_confidence_sqdiff = 0.008  # min desired difference between activations for target and distractor (to avoid jumping to conclusion when there is confusion)
   
   State = Enum(('NONE', 'PRE_TRIAL', 'TRIAL', 'POST_TRIAL'))  # explicit tracking of experiment state (TODO: implement actual usage)

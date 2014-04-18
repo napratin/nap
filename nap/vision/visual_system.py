@@ -10,7 +10,7 @@ from itertools import izip
 
 #import pyNN.neuron as sim
 from lumos.context import Context
-from lumos.util import Enum
+from lumos.util import Enum, getNormMap
 from lumos.input import Projector, run
 from lumos import rpc
 
@@ -203,9 +203,7 @@ class VisualSystem(object):
     self.maxSalienceLoc = (-1, -1)
     
     # ** Spatial weight map with a central soft spotlight (use np.ogrid?)
-    self.images['Weight'] = np.zeros(self.imageShapeC1, dtype=self.imageTypeFloat)
-    cv2.circle(self.images['Weight'], self.imageCenter, int(self.imageSize[0] * self.central_radius_ratio), 1.0, cv.CV_FILLED)
-    self.images['Weight'] = cv2.blur(self.images['Weight'], (self.imageSize[0] / 4, self.imageSize[0] / 4))  # coarse blur
+    self.images['Weight'] = getNormMap(self.imageSize[0])  # X-Y symmetric
     
     # * Image processing elements
     self.bipolarBlurSize = (11, 11)  # size of blurring kernel used when computing Bipolar cell response
