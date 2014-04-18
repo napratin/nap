@@ -31,7 +31,7 @@ class VisualSearchAgent(object):
     self.logger = logging.getLogger(self.__class__.__name__)
     
     # * Parse arguments
-    self.features = self.context.options.features.split(',') if (hasattr(self.context.options, 'feature') and self.context.options.features is not None) else []
+    self.features = self.context.options.features.split(',') if (hasattr(self.context.options, 'features') and self.context.options.features is not None) else []
     self.featureWeights = dict()
     for feature in self.features:
       if ':' in feature:  # check for explicit weights, e.g. RG:0.8,BY:0.75
@@ -317,8 +317,11 @@ if __name__ == "__main__":
   argParser.add_argument('--zelinsky', action='store_true', help="run a Zelinsky search agent")
   argParser.add_argument('--target', default='Q', choices=('Q', 'O'), help='target symbol (Q or O)')
   argParser.add_argument('--size', dest='num_stimuli', type=int, default=5, help='display size (no. of stimuli) to expect')
+  argParser.add_argument('--features', type=str, default=None, help="features to look for, comma separated")  # duplicated for VisualSearchAgent (TODO: Find a better way to unify args, parsers)
   context = Context.createInstance(description="Zelinsky search agent", parent_argparsers=[argParser])
   if context.options.zelinsky:
+    if context.options.features is None:
+      context.options.features = 'OFF:1.0'  # Zelinsky-specific
     ZelinksyFinder(target=context.options.target, distractors=('O' if context.options.target == 'Q' else 'Q'), numStimuli=context.options.num_stimuli).run()
   else:
     VisualSearchAgent().run()
