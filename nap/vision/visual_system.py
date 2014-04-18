@@ -63,7 +63,7 @@ class Finst(object):
   half_life = 5.0
   min_good_activation = 0.1  # FINSTs with activation less than this could be discarded
   
-  default_radius = 32
+  default_radius = 100
   
   def __init__(self, location, focusPoint, radius=default_radius, timeCreated=0.0, activationCreated=max_activation):
     self.location = location  # egocentric fixation location at time of creation
@@ -71,6 +71,7 @@ class Finst(object):
     self.radius = radius  # an indicator of size
     self.timeCreated = timeCreated  # creation time
     self.activationCreated = activationCreated  # a measure of the strength of the FINST upon creation
+    self.inhibitionMap = 1.0 - getNormMap(self.radius * 2, sigma=self.radius / 3.0)  # soft inhibition map based on Normal PDF
     self.update(timeCreated)
   
   def update(self, timeNow):
@@ -578,9 +579,12 @@ class VisualSystem(object):
   
   def inhibitMapAtFinst(self, imageMap, finst):
     loc = finst.getAdjustedLocation(self.ocularMotionSystem.getFocusPoint())
-    cv2.circle(imageMap, loc, finst.radius, 0.0, cv.CV_FILLED)
+    #cv2.circle(imageMap, loc, finst.radius, 0.0, cv.CV_FILLED)  # hard inhibition with solid 0 circle
+    # Soft inhibition using finst.inhibitionMap (TODO: affected by finst.activation?)
+    inhibitionTarget = imageMap[(loc[1] - finst.radius):(loc[1] + finst.radius), (loc[0] - finst.radius):(loc[0] + finst.radius)]
+    sourceTopLeft = (max(finst.radius - loc[1], 0), max(finst.radius - loc[0], 0))  # (y, x)
+    inhibitionTarget *= finst.inhibitionMap[sourceTopLeft[0]:(sourceTopLeft[0] + inhibitionTarget.shape[0]), sourceTopLeft[1]:(sourceTopLeft[1] + inhibitionTarget.shape[1])]
     #cv2.putText(imageMap, "{:.2f}".format(finst.timeCreated), (loc[0] + finst.radius, loc[1] - finst.radius), cv2.FONT_HERSHEY_PLAIN, 1, 0.0)  # [debug]
-    # TODO: Soft inhibition using finst.activation?
   
   def updateFeatureWeights(self, featureWeights, rest=None):
     """Update weights for features mentioned in given dict, using rest for others if not None."""
