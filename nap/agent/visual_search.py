@@ -14,7 +14,7 @@ from lumos import rpc
 from lumos.net import ImageServer
 from lumos.util import Enum
 
-from ..vision.visual_system import VisualSystem, VisionManager, FeatureManager, default_feature_weight, default_feature_weight_rest
+from ..vision.visual_system import VisualSystem, Finst, VisionManager, FeatureManager, default_feature_weight, default_feature_weight_rest, default_window_flags
 
 
 class VisualSearchAgent(object):
@@ -106,13 +106,16 @@ class ZelinksyFinder(VisualSearchAgent):
   
   def __init__(self, fixationSymbol=default_fixation_symbol, target=default_target, distractors=default_distractors, numStimuli=default_num_stimuli, numTrials=default_num_trials, featureChannel='V'):
     VisualSystem.num_finsts = numStimuli  # override FINST size (TODO: make FINSTs fade out, design multi-scale FINSTs to cover larger areas/clusters for a better model)
+    VisualSystem.finst_decay_enabled = True
+    Finst.half_life = numStimuli * 4.0
+    Finst.default_radius = 64
     VisualSearchAgent.__init__(self)
     self.fixationSymbol = fixationSymbol
     self.target = target
     self.distractors = distractors  # None (not supported yet) could mean everything else is a distractor (other than fixation symbol)
     self.featureChannel = featureChannel
     self.numStimuli = numStimuli
-    self.numTrials = numTrials
+    self.numTrials = numTrials  # NOTE(04/19/2014): currently unused
     
     # * Configure visual system as needed (shorter times for fast completion goal, may result in some inaccuracy)
     self.visSys.max_free_duration = 0.25
@@ -150,6 +153,8 @@ class ZelinksyFinder(VisualSearchAgent):
     self.maxFixations = (self.numStimuli * 1.5)  # TODO: Make this a configurable param
     self.numFixations = 0
     self.firstSaccadeLatency = None
+    self.imageInFocus = self.visSys.getFixatedImage(self.featureChannel)
+    self.targetFound = None  # flag, mainly for visualization
     
     # * Trial awareness
     self.trialCount = 0
@@ -169,6 +174,12 @@ class ZelinksyFinder(VisualSearchAgent):
         self.logger.info("Remote keyboard connected (at least an RPC server is there)")
     except Exception as e:
       self.logger.error("Error initializing RPC client (no remote keyboard): {}".format(e))
+    
+    if self.context.options.gui:
+      self.isOutputInverted = True  # True = black on white, False = white on black
+      self.winName = "Zelinsky visual search agent"  # primary output window name
+      self.imageOut = np.full((self.visSys.imageSize[1] * 2, self.visSys.imageSize[0] * 2, 3), 0.0, dtype=self.visSys.imageTypeInt)  # 3-channel composite output image
+      cv2.namedWindow(self.winName, flags=default_window_flags)
   
   def update(self):
     # TODO: If vision is fixated, hold, match shape patterns (templates) with fixation region
@@ -182,28 +193,35 @@ class ZelinksyFinder(VisualSearchAgent):
       if visState == VisualSystem.State.SACCADE and self.firstSaccadeLatency is None:
         self.firstSaccadeLatency = self.context.timeNow
         self.logger.info("First saccade at: {}".format(self.firstSaccadeLatency))
+      if self.context.options.gui:
+        self.visualize()  # duplicate call (TODO: consolidate)
       return True
     
     if self.newFixation:
       self.visSys.setBuffer('intent', 'hold')  # ask visual system to hold fixation till we've processed it (subject to a max hold time)
+      self.targetFound = None
       self.newFixation = False  # pass hold intent only once
     
     if not self.processFixation:  # to prevent repeated processing of the same fixation location (double-counting)
+      if self.context.options.gui:
+        self.visualize()  # duplicate call (TODO: consolidate)
       return True
     
-    # Get foveal/fixated image area: Use key/channel = 'BGR' for full-color matching, 'V' for intensity only, 'H' for hue only (colored bars), etc.
-    #imageFovea = self.visSys.getFovealImage(self.featureChannel)
-    imageFovea = self.visSys.getFixatedImage(self.featureChannel)  # TODO: rename imageFovea -> imageInFocus?
-    #imageFovea = cv2.cvtColor(imageFovea, cv2.COLOR_BGR2GRAY)  # convert BGR to grayscale, if required
-    #cv2.imshow("Fixation", self.visSys.getFixatedImage(self.featureChannel))  # [debug]
-    if imageFovea.shape[0] < self.visSys.foveaSize[0] or imageFovea.shape[1] < self.visSys.foveaSize[1]:
+    # Get foveal/fixated image area (image-in-focus): Use key/channel = 'BGR' for full-color matching, 'V' for intensity only, 'H' for hue only (colored bars), etc.
+    #self.imageInFocus = self.visSys.getFovealImage(self.featureChannel)
+    self.imageInFocus = self.visSys.getFixatedImage(self.featureChannel)
+    #self.imageInFocus = cv2.cvtColor(self.imageInFocus, cv2.COLOR_BGR2GRAY)  # convert BGR to grayscale, if required
+    #cv2.imshow("Focus", self.imageInFocus)  # [debug]
+    if self.imageInFocus.shape[0] < self.visSys.foveaSize[0] or self.imageInFocus.shape[1] < self.visSys.foveaSize[1]:
+      if self.context.options.gui:
+        self.visualize()  # duplicate call (TODO: consolidate)
       return True  # fixated on a weird, incomplete spot
     
     # Compute matches and best match in a loop
-    matches = [matcher.match(imageFovea) for matcher in self.patternMatchers.itervalues()]  # combined matching
+    matches = [matcher.match(self.imageInFocus) for matcher in self.patternMatchers.itervalues()]  # combined matching
     self.logger.info("Matches: %s", ", ".join("{}: {:.3f} at {}".format(match.matcher.name, match.value, match.location) for match in matches))  # combined reporting
     
-    #matchO = self.patternMatchers['O'].match(imageFovea)  # individual matching
+    #matchO = self.patternMatchers['O'].match(self.imageInFocus)  # individual matching
     #self.logger.info("Match (O): value: {:.3f} at {}".format(matchO.value, matchO.location))  # individual reporting
     
     bestMatch = min(matches, key=lambda match: match.value)  # TODO: sort to find difference between two best ones: (bestMatch[1].value - bestMatch[0].value) >= self.min_confidence_sqdiff
@@ -213,8 +231,8 @@ class ZelinksyFinder(VisualSearchAgent):
       self.numFixations += 1  # can be treated as a valid fixation
       self.processFixation = False  # make sure we don't process this fixated location again
       if self.context.options.gui:  # if GUI, mark matched region (NOTE: this modifies foveal image!)
-        cv2.rectangle(imageFovea, bestMatch.location, (bestMatch.location[0] + bestMatch.matcher.pattern.shape[1], bestMatch.location[1] + bestMatch.matcher.pattern.shape[0]), int(255.0 * (1.0 - bestMatch.value)))
-        cv2.putText(imageFovea, str(bestMatch.matcher.name), (bestMatch.location[0] + 2, bestMatch.location[1] + 10), cv2.FONT_HERSHEY_PLAIN, 0.67, 200)
+        cv2.rectangle(self.imageInFocus, bestMatch.location, (bestMatch.location[0] + bestMatch.matcher.pattern.shape[1], bestMatch.location[1] + bestMatch.matcher.pattern.shape[0]), int(255.0 * (1.0 - bestMatch.value)))
+        cv2.putText(self.imageInFocus, str(bestMatch.matcher.name), (bestMatch.location[0] + 2, bestMatch.location[1] + 10), cv2.FONT_HERSHEY_PLAIN, 0.67, 200)
       
       # Now decide what to do based on match
       symbol = bestMatch.matcher.name  # bestMatch.matcher.name contains the symbol specified when creating the corresponding pattern
@@ -229,18 +247,20 @@ class ZelinksyFinder(VisualSearchAgent):
             self.trialStarted = self.context.timeNow
         self.visSys.setBuffer('intent', 'release')  # let visual system inhibit and move on
       elif symbol == self.target:  # found the target!
+        self.respond('y')  # response is primary!
         self.logger.info("Target found!")
-        self.respond('y')
+        self.targetFound = True
         self.nextTrial()
-        return True  # ready for new trial
+        #return True  # ready for new trial (will happen anyways, might as well show foveal image)
         #return False  # end trial and stop this run
       elif self.distractors is None or symbol in self.distractors:
         self.numDistractorsSeen += 1
         self.logger.info("Distractor {}".format(self.numDistractorsSeen))
         if self.numDistractorsSeen >= self.numStimuli or self.numFixations >= self.maxFixations:  # all stimuli were (probably) distractors, no target
           self.respond('n')
+          self.targetFound = False
           self.nextTrial()
-          return True  # ready for new trial
+          #return True  # ready for new trial (will happen anyways, might as well show foveal image)
           #return False  # end trial and stop this run
         else:
           self.visSys.setBuffer('intent', 'release')  # let visual system inhibit and move on
@@ -248,10 +268,12 @@ class ZelinksyFinder(VisualSearchAgent):
         self.logger.warning("I don't know what that is; ignoring fixation")
         self.visSys.setBuffer('intent', 'release')  # let visual system inhibit and move on
     
+    # Visualize system operation
     if self.context.options.gui:
-      cv2.imshow("Fovea", imageFovea)
-      #for match in matches:
-      #  cv2.imshow("Match ({})".format(match.matcher.name), match.result)
+      self.visualize()
+      #if self.context.options.debug:
+      #  for match in matches:
+      #    cv2.imshow("Match ({})".format(match.matcher.name), match.result)
     
     return True
   
@@ -275,6 +297,52 @@ class ZelinksyFinder(VisualSearchAgent):
     self.firstSaccadeLatency = None
     
     self.visSys.setBuffer('intent', 'reset')
+  
+  def visualize(self):
+    # Combine individual outputs into giant composite image
+    self.imageOut[0:self.visMan.imageSize[1], 0:self.visMan.imageSize[0]] = self.visMan.image  # input
+    self.imageOut[0:self.visSys.imageSize[1], (self.imageOut.shape[1] - self.visSys.imageSize[0]):self.imageOut.shape[1]] = self.visSys.images['BGR']  # retina
+    self.imageOut[0:self.imageInFocus.shape[0], (self.imageOut.shape[1] - self.imageInFocus.shape[1]):self.imageOut.shape[1]] = cv2.cvtColor(self.imageInFocus, cv2.COLOR_GRAY2BGR)  # foveal image, inset top-right
+    self.imageOut[(self.imageOut.shape[0] - self.visSys.imageSize[1]):self.imageOut.shape[0], 0:self.visSys.imageSize[0]].fill(0)
+    if self.context.options.debug:
+      #self.imageOut[(self.imageOut.shape[0] - self.visSys.imageSize[1]):self.imageOut.shape[0], 0:self.visSys.imageSize[0]] = cv2.cvtColor(self.visSys.imageSalienceOutCombined, cv2.COLOR_GRAY2BGR)  # combined salience (neuron firings)
+      self.imageOut[(self.imageOut.shape[0] - self.visSys.imageSize[1]):self.imageOut.shape[0], 0:self.visSys.imageSize[0], 1] = cv2.convertScaleAbs(self.visSys.imageSalienceOutCombined, alpha=5, beta=0)  # combined salience (neuron firings): Magenta = high
+    #self.imageOut[(self.imageOut.shape[0] - self.visSys.imageSize[1]):self.imageOut.shape[0], (self.imageOut.shape[1] - self.visSys.imageSize[0]):self.imageOut.shape[1]] = cv2.cvtColor(self.visSys.imageOut, cv2.COLOR_GRAY2BGR)  # VisualSystem output salience and labels/marks
+    if self.isOutputInverted:
+      self.imageOut = 255 - self.imageOut
+    # Colored visualizations, post-inversion
+    self.imageOut[(self.imageOut.shape[0] - self.visSys.imageSize[1]):self.imageOut.shape[0], (self.imageOut.shape[1] - self.visSys.imageSize[0]):self.imageOut.shape[1], 0] = 255 - self.visSys.imageOut  # VisualSystem output salience and labels/marks: Blue = low
+    self.imageOut[(self.imageOut.shape[0] - self.visSys.imageSize[1]):self.imageOut.shape[0], (self.imageOut.shape[1] - self.visSys.imageSize[0]):self.imageOut.shape[1], 1] = cv2.convertScaleAbs(self.visSys.imageOut, alpha=4, beta=0)  # VisualSystem output salience and labels/marks: Green = high
+    self.imageOut[(self.imageOut.shape[0] - self.visSys.imageSize[1]):self.imageOut.shape[0], (self.imageOut.shape[1] - self.visSys.imageSize[0]):self.imageOut.shape[1], 2] = cv2.convertScaleAbs(self.visSys.imageOut, alpha=4, beta=0)  # VisualSystem output salience and labels/marks: Red = high (combined with Green, Yellow = high)
+    #cv2.convertScaleAbs(self.imageOut, dst=self.imageOut, alpha=0, beta=255)
+    #imageOutGray = cv2.cvtColor(self.imageOut, cv2.COLOR_BGR2GRAY)  # converting back to grayscale, very inefficient
+    #cv2.equalizeHist(imageOutGray, dst=imageOutGray)
+    
+    # Draw frames, labels, marks and show
+    cv2.rectangle(self.imageOut, (0, 0), (self.imageOut.shape[1] - 1, self.imageOut.shape[0] - 1), (128, 128, 128), 2)  # outer border
+    cv2.line(self.imageOut, (0, self.imageOut.shape[0] / 2), (self.imageOut.shape[1], self.imageOut.shape[0] / 2), (128, 128, 128), 2)  # inner border, horizontal
+    cv2.line(self.imageOut, (self.imageOut.shape[1] / 2, 0), (self.imageOut.shape[1] / 2, self.imageOut.shape[0]), (128, 128, 128), 2)  # inner border, vertical
+    cv2.rectangle(self.imageOut, (self.imageOut.shape[1] - self.imageInFocus.shape[1], 0), (self.imageOut.shape[1] - 1, self.imageInFocus.shape[0] - 1), (128, 128, 128), 2)  # inset border, top-right
+    self.labelImage(self.imageOut, "Input", (20, self.imageOut.shape[0] / 2 - 20))
+    self.labelImage(self.imageOut, "Retina", (self.imageOut.shape[1] / 2 + 20, self.imageOut.shape[0] / 2 - 20))
+    self.labelImage(self.imageOut, "Focus", (self.imageOut.shape[1] - self.imageInFocus.shape[1] + 12, self.imageInFocus.shape[0] + 24), color=(128, 128, 128), bgColor=None)
+    self.labelImage(self.imageOut, "Neuron activity", (20, self.imageOut.shape[0] - 20))
+    self.labelImage(self.imageOut, "Output visualization", (self.imageOut.shape[1] / 2 + 20, self.imageOut.shape[0] - 20))
+    focusRectColor = (64, 64, 64)  # gray, default
+    if self.targetFound is not None:
+      focusRectColor = (16, 128, 16) if self.targetFound else (16, 16, 128)  # green if targetFound else red
+      self.labelImage(self.imageOut, "Y" if self.targetFound else "N", (self.imageOut.shape[1] / 2 + self.visSys.fixationSlice[1].start + 6, self.imageOut.shape[0] / 2 + self.visSys.fixationSlice[0].stop - 6), color=focusRectColor, bgColor=None)
+    cv2.rectangle(self.imageOut, (self.imageOut.shape[1] / 2 + self.visSys.fixationSlice[1].start, self.imageOut.shape[0] / 2 + self.visSys.fixationSlice[0].start), (self.imageOut.shape[1] / 2 + self.visSys.fixationSlice[1].stop, self.imageOut.shape[0] / 2 + self.visSys.fixationSlice[0].stop), focusRectColor, 2)  # focus rect in output image
+    cv2.imshow(self.winName, self.imageOut)
+    #cv2.imshow(self.winName, imageOutGray)
+  
+  def labelImage(self, img, text, org, fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=0.8, color=(200, 200, 200), thickness=2, bgColor=(32, 32, 32)):
+    """Wrapper around cv2.putText to add a background/box."""
+    # TODO: Make this a util function
+    if bgColor is not None:
+      textSize, baseline = cv2.getTextSize(text, fontFace, fontScale, thickness)
+      cv2.rectangle(img, (org[0] - baseline, org[1] + baseline + 2), (org[0] + textSize[0] + baseline, org[1] - textSize[1] - baseline), bgColor, -1)
+    cv2.putText(img, text, org, fontFace, fontScale, color, thickness)
 
 
 PatternMatch = namedtuple('PatternMatch', ['value', 'location', 'result', 'matcher'])

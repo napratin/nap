@@ -38,6 +38,7 @@ num_reps = options.num_reps  # 128 (NOTE: num_trials = num_reps * all factor lev
 distractor = 'O' if target == 'Q' else 'Q'  # 'O' or 'Q', determined by target
 random_seed = num_stimuli + ord(target)  # used to set numpy RNG's seed
 np.random.seed(random_seed)  # TODO: ensure no one else re-seeds this later
+fixationCrossDuration = 4.0  # secs.; how long the fixation cross should stay
 save_images = False  # TODO: complete this functionality, then enable to save snapshots
 if options.hide_text:
     instructions = u""  # NOTE: pre-trial screen still waits for keypress
@@ -428,11 +429,11 @@ for thisBlock in block:
             fixationCross.tStart = t  # underestimates by a little under one frame
             fixationCross.frameNStart = frameN  # exact frame index
             fixationCross.setAutoDraw(True)
-        elif fixationCross.status == STARTED and t >= (0.0 + 1.5):
+        elif fixationCross.status == STARTED and t >= (0.0 + fixationCrossDuration):
             fixationCross.setAutoDraw(False)
         
         # *stims* (generated stimuli) updates
-        if t >= 1.5 and stims_status == NOT_STARTED:
+        if t >= fixationCrossDuration and stims_status == NOT_STARTED:
             # start generated stimuli
             for stim in stims:
                 startStimulus(stim)
@@ -440,18 +441,18 @@ for thisBlock in block:
             #print "Stimuli started"  #[debug]
             if logEvents:  # log trial start
                 eventLogger.log(eventTag, "start\t{}\t{}\t{}\t{}\t{}\t{}".format(block.thisN, present, target, num_stimuli, -1, t))  # -1 signifies unknown
-        #elif stims_status == STARTED and t >= (1.5 + 3.0):
+        #elif stims_status == STARTED and t >= (fixationCrossDuration + 3.0):
         #    pass  # will be stopped at the end of the trial
         
         # *dummy* updates
-        if t >= 1.5 and dummy.status == NOT_STARTED:
+        if t >= fixationCrossDuration and dummy.status == NOT_STARTED:
             # keep track of start time/frame for later
             dummy.tStart = t  # underestimates by a little under one frame
             dummy.frameNStart = frameN  # exact frame index
             dummy.setAutoDraw(True)
         
         # *response* updates
-        if t >= 1.5 and response.status == NOT_STARTED:
+        if t >= fixationCrossDuration and response.status == NOT_STARTED:
             # keep track of start time/frame for later
             response.tStart = t  # underestimates by a little under one frame
             response.frameNStart = frameN  # exact frame index

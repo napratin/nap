@@ -25,6 +25,9 @@ from ..motion.ocular import EmulatedOcularMotionSystem
 default_feature_weight = 0.9  # default weight for a feature pathway, treated as update probability for its neurons
 default_feature_weight_rest = 0.25  # default weight for features other than the ones desired
 
+# Global GUI options
+default_window_flags = cv2.WINDOW_AUTOSIZE | 0x00000010  # CV_GUI_NORMAL = 0x00000010
+
 # Global initialization
 np.set_printoptions(precision=4, linewidth=120)  # for printing feature vectors: a few decimal places are fine; try not to break lines, especially in log files
 
@@ -65,13 +68,13 @@ class Finst(object):
   
   default_radius = 100
   
-  def __init__(self, location, focusPoint, radius=default_radius, timeCreated=0.0, activationCreated=max_activation):
+  def __init__(self, location, focusPoint, radius=None, timeCreated=0.0, activationCreated=max_activation):
     self.location = location  # egocentric fixation location at time of creation
     self.focusPoint = focusPoint  # allocentric focus point at time of creation
-    self.radius = radius  # an indicator of size
+    self.radius = radius if radius is not None else self.default_radius  # an indicator of size
     self.timeCreated = timeCreated  # creation time
     self.activationCreated = activationCreated  # a measure of the strength of the FINST upon creation
-    self.inhibitionMap = 1.0 - getNormMap(self.radius * 2, sigma=self.radius / 3.0)  # soft inhibition map based on Normal PDF
+    self.inhibitionMap = getNormMap(self.radius * 2, sigma=self.radius / 3.0)  # soft inhibition map based on Normal PDF
     self.update(timeCreated)
   
   def update(self, timeNow):
@@ -204,7 +207,7 @@ class VisualSystem(object):
     self.maxSalienceLoc = (-1, -1)
     
     # ** Spatial weight map with a central soft spotlight (use np.ogrid?)
-    self.images['Weight'] = getNormMap(self.imageSize[0])  # X-Y symmetric
+    self.images['Weight'] = getNormMap(self.imageSize[0], sigma=self.imageSize[0] / 2.0)  # X-Y symmetric
     
     # * Image processing elements
     self.bipolarBlurSize = (11, 11)  # size of blurring kernel used when computing Bipolar cell response
@@ -249,9 +252,18 @@ class VisualSystem(object):
     self.imageOut = None
     if self.context.options.gui:
       #self.imageOut = np.zeros(self.imageShapeC3, dtype=self.imageTypeInt)
-      # TODO Salience and selection output will be for each feature pathway
-      self.imageSalienceOut = np.zeros(self.imageShapeC1, dtype=self.imageTypeInt)  # salience neuron outputs
-      self.imageSelectionOut = np.zeros(self.imageShapeC1, dtype=self.imageTypeInt)  # selection neuron outputs
+      
+      cv2.namedWindow("Input", flags=default_window_flags)
+      cv2.namedWindow("Retina", flags=default_window_flags)
+      cv2.namedWindow("Output", flags=default_window_flags)
+      if self.context.options.debug:
+        for pathwayLabel in self.featurePathways.iterkeys():
+          cv2.namedWindow("{} Salience".format(pathwayLabel), flags=default_window_flags)
+      
+        # TODO Salience and selection output will be for each feature pathway (but the same can be rendered to, displayed and reused)
+        self.imageSalienceOut = np.zeros(self.imageShapeC1, dtype=self.imageTypeInt)  # salience neuron outputs
+        self.imageSalienceOutCombined = np.zeros(self.imageShapeC1, dtype=self.imageTypeInt)  # salience neuron outputs, all pathways combined
+        #self.imageSelectionOut = np.zeros(self.imageShapeC1, dtype=self.imageTypeInt)  # selection neuron outputs
       
       if showMonitor is None:
         showMonitor = self.context.options.gui and self.context.options.debug
@@ -319,7 +331,7 @@ class VisualSystem(object):
     # NOTE Blurring is a step that is effectively achieved in biology by horizontal cells
     imageRodBlurred = cv2.blur(self.images['Rod'], self.bipolarBlurSize)
     self.images['Bipolar']['ON'] = np.clip(self.images['Rod'] - 0.75 * imageRodBlurred, 0.0, 1.0)
-    self.images['Bipolar']['OFF'] = np.clip((1.0 - self.images['Rod']) - 0.95 * (1.0 - imageRodBlurred), 0.0, 1.0)  # same as (1 - ON response)? (nope)
+    self.images['Bipolar']['OFF'] = np.clip((1.0 - self.images['Rod']) - 0.9 * (1.0 - imageRodBlurred), 0.0, 1.0)  # same as (1 - ON response)? (nope)
     
     # ** Bipolar responses: Cones
     # TODO Add multiscale Cone Bipolars to prevent unwanted response to diffuse illumination
@@ -388,6 +400,9 @@ class VisualSystem(object):
     self.logger.debug("Max. salience value: {:5.3f} @ {}".format(self.maxSalience, self.maxSalienceLoc))  # [verbose]
     
     # * Compute features along each pathway
+    if self.context.options.gui and self.context.options.debug:
+      self.imageSalienceOutCombined.fill(0.0)
+    
     for pathwayLabel, featurePathway in self.featurePathways.iteritems():
       if featurePathway.active:
         # ** Update feature pathway populations (TODO find a more reliable way of grabbing salience and selection neuron populations)
@@ -440,8 +455,9 @@ class VisualSystem(object):
           self.imageSalienceOut.fill(0.0)
           for salienceNeuron in salienceNeurons.neurons:
             # Render salience neuron's receptive field with response-based pixel value (TODO cache int radii and pixel as tuple?)
-            cv2.circle(self.imageSalienceOut, (salienceNeuron.pixel[0], salienceNeuron.pixel[1]), np.int_(salienceNeuron.rfRadius), 128)
-            cv2.circle(self.imageSalienceOut, (salienceNeuron.pixel[0], salienceNeuron.pixel[1]), np.int_(salienceNeuron.rfCenterRadius), salienceNeuron.pixelValue, cv.CV_FILLED)
+            #cv2.circle(self.imageSalienceOut, (salienceNeuron.pixel[0], salienceNeuron.pixel[1]), np.int_(salienceNeuron.rfRadius), 128)  # outer radius of surround as a boundary
+            cv2.circle(self.imageSalienceOut, (salienceNeuron.pixel[0], salienceNeuron.pixel[1]), np.int_(salienceNeuron.rfCenterRadius), salienceNeuron.pixelValue, cv.CV_FILLED)  # inner center field, filled with current value
+          self.imageSalienceOutCombined = np.maximum(self.imageSalienceOutCombined, self.imageSalienceOut)
           
           # *** Selection neurons
           if featurePathway.selectedNeuron is not None and (timeNow - featurePathway.selectedTime) < 3.0:
@@ -519,7 +535,7 @@ class VisualSystem(object):
       # Designate a representative output image
       #self.imageOut = cv2.bitwise_and(self.retina.images['BGR'], self.retina.images['BGR'], mask=self.imageSelectionOut)  # mask out everything outside selected neuron's receptive field
       self.imageOut = self.images['Salience']  # make a copy?
-      #_, self.imageOut = cv2.threshold(self.imageOut, 0.5, 1.0, cv2.THRESH_TOZERO)  # apply threshold to remove low-response regions
+      #_, self.imageOut = cv2.threshold(self.imageOut, 0.1, 1.0, cv2.THRESH_TOZERO)  # apply threshold to remove low-response regions
       self.imageOut = np.uint8(self.imageOut * 255)  # convert to uint8 image for display (is this necessary?)
       if self.maxSalience >= self.min_saccade_salience:
         cv2.circle(self.imageOut, self.maxSalienceLoc, 3, 175, -1)  # mark most salient location with a small faint dot
@@ -527,7 +543,7 @@ class VisualSystem(object):
           cv2.circle(self.imageOut, self.maxSalienceLoc, int(self.maxSalience * 25), int(128 + self.maxSalience * 127), 1 + int(self.maxSalience * 4))  # highlight highly salient locations: larger, fatter, brighter for higher salience value
       if self.state == self.State.FIXATE and self.fixationLoc is not None:
         cv2.circle(self.imageOut, self.fixationLoc, 1, 225, -1)  # mark fixation location with a tiny bright dot
-      cv2.putText(self.imageOut, self.State.toString(self.state) + (" (holding)" if self.hold else ""), (20, 30), cv2.FONT_HERSHEY_PLAIN, 1, 200)  # show current state
+      cv2.putText(self.imageOut, self.State.toString(self.state) + (" (holding)" if self.hold else ""), (20, 40), cv2.FONT_HERSHEY_PLAIN, 1.5, 200, 2)  # show current state
     
     return True, self.imageOut
   
@@ -581,9 +597,11 @@ class VisualSystem(object):
     loc = finst.getAdjustedLocation(self.ocularMotionSystem.getFocusPoint())
     #cv2.circle(imageMap, loc, finst.radius, 0.0, cv.CV_FILLED)  # hard inhibition with solid 0 circle
     # Soft inhibition using finst.inhibitionMap (TODO: affected by finst.activation?)
-    inhibitionTarget = imageMap[(loc[1] - finst.radius):(loc[1] + finst.radius), (loc[0] - finst.radius):(loc[0] + finst.radius)]
+    inhibitionTarget = imageMap[max(loc[1] - finst.radius, 0):min(loc[1] + finst.radius, imageMap.shape[0]), max(loc[0] - finst.radius, 0):min(loc[0] + finst.radius, imageMap.shape[1])]
     sourceTopLeft = (max(finst.radius - loc[1], 0), max(finst.radius - loc[0], 0))  # (y, x)
-    inhibitionTarget *= finst.inhibitionMap[sourceTopLeft[0]:(sourceTopLeft[0] + inhibitionTarget.shape[0]), sourceTopLeft[1]:(sourceTopLeft[1] + inhibitionTarget.shape[1])]
+    inhibitionSource = finst.inhibitionMap[sourceTopLeft[0]:(sourceTopLeft[0] + inhibitionTarget.shape[0]), sourceTopLeft[1]:(sourceTopLeft[1] + inhibitionTarget.shape[1])]
+    #self.logger.debug("loc: {}, source.shape: {}, target.shape: {}, sourceTopLeft: {}".format(loc, inhibitionSource.shape, inhibitionTarget.shape, sourceTopLeft))
+    inhibitionTarget *= (1.0 - finst.activation * inhibitionSource)
     #cv2.putText(imageMap, "{:.2f}".format(finst.timeCreated), (loc[0] + finst.radius, loc[1] - finst.radius), cv2.FONT_HERSHEY_PLAIN, 1, 0.0)  # [debug]
   
   def updateFeatureWeights(self, featureWeights, rest=None):
@@ -642,14 +660,14 @@ class VisualSystem(object):
       # ** Create layers
       # *** Salience neurons (TODO introduce magno and parvo types; expose layer parameters such as Z-axis position)
       salienceLayerBounds = np.float32([[0.0, 0.0, 0.0], [self.imageSize[0] - 1, self.imageSize[1] - 1, 0.0]])
-      salienceNeuronDistribution = MultivariateNormal(mu=self.center, cov=(np.float32([self.center[0] ** 1.25, self.center[1] ** 1.25, 1.0]) * np.identity(3, dtype=np.float32)))
+      salienceNeuronDistribution = MultivariateNormal(mu=self.center, cov=(np.float32([self.center[0] ** 1.5, self.center[1] ** 1.5, 1.0]) * np.identity(3, dtype=np.float32)))
       #salienceNeuronDistribution = MultivariateUniform(lows=[0.0, 0.0, 0.0], highs=[self.imageSize[0], self.imageSize[1], 0.0])
       salienceNeurons = Population(numNeurons=self.num_salience_neurons, timeNow=self.timeNow, neuronTypes=[SalienceNeuron], bounds=salienceLayerBounds, distribution=salienceNeuronDistribution, system=self, pathway=pathwayLabel, imageSet=self.images['Ganglion'])
       # TODO self.addPopulation(salienceNeurons)?
       
       # *** Selection neurons
       selectionLayerBounds = np.float32([[0.0, 0.0, 50.0], [self.imageSize[0] - 1, self.imageSize[1] - 1, 50.0]])
-      selectionNeuronDistribution = MultivariateNormal(mu=self.center + np.float32([0.0, 0.0, 50.0]), cov=(np.float32([self.center[0] ** 1.25, self.center[1] ** 1.25, 1.0]) * np.identity(3, dtype=np.float32)))
+      selectionNeuronDistribution = MultivariateNormal(mu=self.center + np.float32([0.0, 0.0, 50.0]), cov=(np.float32([self.center[0] ** 1.5, self.center[1] ** 1.5, 1.0]) * np.identity(3, dtype=np.float32)))
       #selectionNeuronDistribution = MultivariateUniform(lows=[0.0, 0.0, 50.0], highs=[self.imageSize[0], self.imageSize[1], 50.0])
       selectionNeurons = Population(numNeurons=self.num_selection_neurons, timeNow=self.timeNow, neuronTypes=[SelectionNeuron], bounds=selectionLayerBounds, distribution=selectionNeuronDistribution, system=self, pathway=pathwayLabel)
       # TODO self.addPopulation(selectionNeurons)?
