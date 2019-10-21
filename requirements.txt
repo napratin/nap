@@ -25,7 +25,7 @@ Twisted-Names==13.0.0
 Twisted-Web==13.0.0
 UniConvertor==1.1.4
 VTK==5.8.0
-Werkzeug==0.9.4
+Werkzeug==0.15.3
 adium-theme-ubuntu==0.3.3
 apptools==4.1.0
 apt-xapian-index==0.45
