@@ -1,7 +1,7 @@
 -e git+git@github.com:tcstewar/ccmsuite.git@7bc759b355a1e623add73954657d561a2b4395ea#egg=CCMSuite-dev/vision
 CairoSVG==1.0.4
 Cython==0.19.2
-Django==1.6.5
+Django==1.11.28
 Flask==0.10.1
 GDAL==1.9.0
 GnuPGInterface==0.3.2
