@@ -59,7 +59,7 @@ gevent==1.0
 globs==0.2
 greenlet==0.4.2
 -e git+git@github.com:joeyespo/grip.git@3fbf767ef7372c0b0e89edd5fe87b3eec5abb269#egg=grip-master
-httplib2==0.8
+httplib2==0.19.0
 ipython==0.13.2
 itsdangerous==0.23
 jockey==0.9.7
