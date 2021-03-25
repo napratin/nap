@@ -17,7 +17,7 @@ PsychoPy==1.78.01
 PyAudio==0.2.7
 PyNN==0.8beta1
 PyOpenGL==3.0.1
-PyYAML==3.10
+PyYAML==5.4
 Pygments==1.6
 SecretStorage==1.0.0
 Twisted-Core==13.0.0
