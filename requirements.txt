@@ -18,7 +18,7 @@ PyAudio==0.2.7
 PyNN==0.8beta1
 PyOpenGL==3.0.1
 PyYAML==3.10
-Pygments==1.6
+Pygments==2.7.4
 SecretStorage==1.0.0
 Twisted-Core==13.0.0
 Twisted-Names==13.0.0
