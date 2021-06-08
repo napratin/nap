@@ -12,7 +12,7 @@ Markdown==2.3.1
 MarkupSafe==0.15
 NEURON==7.3
 PAM==0.4.2
-Pillow==2.0.0
+Pillow==8.2.0
 PsychoPy==1.78.01
 PyAudio==0.2.7
 PyNN==0.8beta1
