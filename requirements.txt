@@ -74,7 +74,7 @@ librato-metrics==0.4.9
 lockfile==0.8
 logilab-common==0.61.0
 -e git+git@github.com:napratin/lumos.git@e4bb5af697ea4383c87b961cd1bd7ad8c62d0466#egg=lumos-master
-lxml==3.2.0
+lxml==4.6.5
 matplotlib==1.3.1
 mayavi==4.1.0
 mercurial==2.6.3
