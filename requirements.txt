@@ -116,7 +116,7 @@ pygpgme==0.3
 pyinotify==0.9.3
 pylint==1.1.0
 pymongo==2.6.3
-pyo==0.6.6
+pyo==1.0.3
 pyopencl==2013.2
 pyparsing==2.0.1
 -e git+git@github.com:pyqtgraph/pyqtgraph.git@0045863165fe526988c58cf4f8232ae2d261a5ee#egg=pyqtgraph-origin/develop
