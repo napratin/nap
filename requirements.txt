@@ -133,7 +133,7 @@ pyxdg==0.25
 pyzmq==14.0.1
 quantities==0.10.1
 rabbitvcs==0.15.3
-reportlab==2.6
+reportlab==3.5.55
 requests==1.2.3
 rhythmbox-ubuntuone==13.10
 rosdep==0.10.18
