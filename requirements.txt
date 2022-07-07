@@ -134,7 +134,7 @@ pyzmq==14.0.1
 quantities==0.10.1
 rabbitvcs==0.15.3
 reportlab==2.6
-requests==1.2.3
+requests==2.20.0
 rhythmbox-ubuntuone==13.10
 rosdep==0.10.18
 rosdistro==0.2.8
