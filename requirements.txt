@@ -7,7 +7,7 @@ GDAL==1.9.0
 GnuPGInterface==0.3.2
 GraphLab-Create==0.3.0
 Jinja2==2.7.1
-Mako==0.8.1
+Mako==1.2.2
 Markdown==2.3.1
 MarkupSafe==0.15
 NEURON==7.3
