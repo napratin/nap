@@ -24,7 +24,7 @@ Twisted-Core==13.0.0
 Twisted-Names==13.0.0
 Twisted-Web==13.0.0
 UniConvertor==1.1.4
-VTK==5.8.0
+VTK==9.0.1
 Werkzeug==0.9.4
 adium-theme-ubuntu==0.3.3
 apptools==4.1.0
